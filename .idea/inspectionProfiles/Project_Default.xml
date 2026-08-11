@@ -1,0 +1,10 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="GoCommentLeadingSpace" enabled="false" level="WEAK WARNING" enabled_by_default="false" />
+    <inspection_tool class="GoCommentStart" enabled="false" level="INFORMATION" enabled_by_default="false" />
+    <inspection_tool class="GoExportedElementShouldHaveComment" enabled="false" level="INFORMATION" enabled_by_default="false" />
+    <inspection_tool class="GoLeadingWhitespaceInDirectiveComment" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="GoLinter" enabled="true" level="WARNING" enabled_by_default="true" />
+  </profile>
+</component>
