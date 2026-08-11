@@ -10,6 +10,10 @@ const (
 	// RequestIDKey stores the unique request identifier
 	RequestIDKey ContextKey = "request_id"
 
+	// RequestStartTimeKey stores the request start timestamp.
+	// Value type: time.Time
+	RequestStartTimeKey ContextKey = "request_start_time"
+
 	// UserKey stores the authenticated user object
 	UserKey ContextKey = "user"
 

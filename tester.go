@@ -3,17 +3,13 @@ package graphqltester
 import (
 	"context"
 	"fmt"
+	"github.com/graph-gophers/graphql-go/relay"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"sync"
 	"testing"
-	"time"
 
-	graphql "github.com/graph-gophers/graphql-go"
-
-	"github.com/mwangaben/graphqltester/assertions"
 	httpadapter "github.com/mwangaben/graphqltester/pkg/adapters/http"
 	"github.com/mwangaben/graphqltester/pkg/middleware"
 	"github.com/mwangaben/graphqltester/types"
@@ -104,23 +100,23 @@ func (tester *Tester) CurrentToken() string {
 	return tester.currentToken
 }
 
-// HasPermission checks if the current user has a specific permission.
-func (tester *Tester) HasPermission(permission string) bool {
-	if tester.currentUser == nil {
-		return false
-	}
-	// Integration with permission package would go here
-	return false
-}
+//// HasPermission checks if the current user has a specific permission.
+//func (tester *Tester) HasPermission(permission string) bool {
+//	if tester.currentUser == nil {
+//		return false
+//	}
+//	// Integration with permission package would go here
+//	return false
+//}
 
 // HasRole checks if the current user has a specific role.
-func (tester *Tester) HasRole(role string) bool {
-	if tester.currentUser == nil {
-		return false
-	}
-	// Integration with permission package would go here
-	return false
-}
+//func (tester *Tester) HasRole(role string) bool {
+//	if tester.currentUser == nil {
+//		return false
+//	}
+//	// Integration with permission package would go here
+//	return false
+//}
 
 // Logf logs a formatted message for debugging.
 func (tester *Tester) Logf(format string, args ...interface{}) {
@@ -416,7 +412,7 @@ func (tester *Tester) setupMiddleware() {
 func (tester *Tester) createGraphQLHandler() http.Handler {
 	// Create a GraphQL handler using graph-gophers/graphql-go
 	schema := tester.schema.GetSchema()
-	return &graphql.Handler{Schema: schema}
+	return &relay.Handler{Schema: schema}
 }
 
 // ============================================================================
@@ -543,33 +539,33 @@ func (tester *Tester) MigrateFresh() *Tester {
 	return tester
 }
 
-// Seed runs a seeder function to populate the database.
-func (tester *Tester) Seed(seeder func()) *Tester {
-	if tester.config.Debug() {
-		tester.t.Logf("🌱 Running seeder...")
-	}
-	seeder()
-	if tester.config.Debug() {
-		tester.t.Logf("✅ Seeder completed")
-	}
-	return tester
-}
+//// Seed runs a seeder function to populate the database.
+//func (tester *Tester) Seed(seeder func()) *Tester {
+//	if tester.config.Debug() {
+//		tester.t.Logf("🌱 Running seeder...")
+//	}
+//	seeder()
+//	if tester.config.Debug() {
+//		tester.t.Logf("✅ Seeder completed")
+//	}
+//	return tester
+//}
 
 // ============================================================================
 // Factory Operations
 // ============================================================================
 
 // Factory returns a factory builder for creating test data.
-func (tester *Tester) Factory(name string) *FactoryBuilder {
-	if tester.config.Packages == nil || tester.config.Packages.Factory == nil {
-		tester.t.Fatal("❌ Factory package is not configured. Set it in PackageConfig.")
-	}
-	return &FactoryBuilder{
-		tester: tester,
-		name:   name,
-		count:  1,
-	}
-}
+//func (tester *Tester) Factory(name string) *FactoryBuilder {
+//	if tester.config.Packages == nil || tester.config.Packages.Factory == nil {
+//		tester.t.Fatal("❌ Factory package is not configured. Set it in PackageConfig.")
+//	}
+//	return &FactoryBuilder{
+//		tester: tester,
+//		name:   name,
+//		count:  1,
+//	}
+//}
 
 // ============================================================================
 // Multi-Tenancy Operations
@@ -637,24 +633,24 @@ func (tester *Tester) WithoutMiddleware(names ...string) *Tester {
 // ============================================================================
 
 // SetShared sets a value in the shared state (visible to sub-tests).
-func (tester *Tester) SetShared(key string, value interface{}) {
-	tester.mu.Lock()
-	defer tester.mu.Unlock()
-	if tester.state == nil {
-		tester.state = make(map[string]interface{})
-	}
-	tester.state[key] = value
-}
+//func (tester *Tester) SetShared(key string, value interface{}) {
+//	tester.mu.Lock()
+//	defer tester.mu.Unlock()
+//	if tester.state == nil {
+//		tester.state = make(map[string]interface{})
+//	}
+//	tester.state[key] = value
+//}
 
 // GetShared retrieves a value from the shared state.
-func (tester *Tester) GetShared(key string) interface{} {
-	tester.mu.RLock()
-	defer tester.mu.RUnlock()
-	if tester.state == nil {
-		return nil
-	}
-	return tester.state[key]
-}
+//func (tester *Tester) GetShared(key string) interface{} {
+//	tester.mu.RLock()
+//	defer tester.mu.RUnlock()
+//	if tester.state == nil {
+//		return nil
+//	}
+//	return tester.state[key]
+//}
 
 // ============================================================================
 // Internal Helpers
@@ -703,3 +699,97 @@ type TenantContext struct {
 	Data     map[string]interface{}
 	Database types.DatabaseAdapter
 }
+
+// ============================================================================
+// Test Organization (BDD Style)
+// ============================================================================
+
+/**
+ * Run creates a sub-test with isolated state.
+ *
+ * This follows the testing.T.Run() pattern. The sub-test gets a clone
+ * of the tester with its own state.
+ *
+ * Parameters:
+ *   name - Name of the sub-test
+ *   fn   - Function receiving the sub-tester
+ *
+ * Example:
+ *   tester.Run("User Tests", func(t *Tester) {
+ *       t.GivenAdmin()
+ *       response := t.GraphQL(`{ users { name } }`)
+ *       assert.NotNil(t, response)
+ *   })
+ */
+func (tester *Tester) Run(name string, fn func(*Tester)) {
+	tester.t.Helper()
+	tester.t.Run(name, func(t *testing.T) {
+		sub := tester.clone()
+		sub.t = t
+		fn(sub)
+	})
+}
+
+/**
+ * Describe creates a test group for BDD-style testing.
+ *
+ * Inspired by Jest/Mocha/Pest, this provides a readable way to group
+ * related tests together.
+ *
+ * Parameters:
+ *   description - Human-readable description of the test group
+ *   fn          - Function containing the test group's tests
+ *
+ * Example:
+ *   tester.Describe("User Authentication", func(t *Tester) {
+ *       t.It("requires email and password", func(t *Tester) {
+ *           // Test...
+ *       })
+ *   })
+ */
+//func (tester *Tester) Describe(description string, fn func(*Tester)) {
+//	tester.t.Helper()
+//	tester.t.Logf("\n📋 %s", description)
+//	fn(tester)
+//}
+
+/**
+ * It creates a single test case for BDD-style testing.
+ *
+ * Each It block represents a single test scenario with a descriptive name
+ * that reads like a sentence: "It should require authentication".
+ *
+ * Parameters:
+ *   description - Description of what is being tested
+ *   fn          - The test function
+ *
+ * Example:
+ *   tester.It("returns 401 for unauthenticated requests", func(t *Tester) {
+ *       tester.GraphQL(`{ users { name } }`).AssertUnauthenticated()
+ *   })
+ */
+//func (tester *Tester) It(description string, fn func(*Tester)) {
+//	tester.t.Helper()
+//	tester.t.Run(description, func(t *testing.T) {
+//		sub := tester.clone()
+//		sub.t = t
+//		fn(sub)
+//	})
+//}
+
+/**
+ * BeforeEach sets up state before each test.
+ *
+ * The provided function runs before each test in the current scope.
+ *
+ * Parameters:
+ *   fn - Setup function to run before each test
+ *
+ * Example:
+ *   tester.BeforeEach(func() {
+ *       tester.RefreshDatabase().GivenAdmin()
+ *   })
+ */
+//func (tester *Tester) BeforeEach(fn func()) {
+//	fn()
+//}

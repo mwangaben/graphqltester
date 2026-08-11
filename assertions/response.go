@@ -7,12 +7,9 @@ package assertions
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"reflect"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"

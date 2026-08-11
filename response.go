@@ -2,9 +2,7 @@ package graphqltester
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -62,12 +60,12 @@ func (r *Response) Fatalf(format string, args ...interface{}) { r.tester.t.Fatal
 // ============================================================================
 
 func (r *Response) Debug() {
-	if r.tester.config.Debug {
+	if r.tester.config.debugEnabled {
 		r.tester.t.Logf("   Raw body: %s", string(r.rawBody))
 	}
 }
 
-func (r *Response) Dump() *Response {
+func (r *Response) Dump() types.DebuggableResponse {
 	r.tester.t.Log("╔══════════════════════════════════════════════════╗")
 	r.tester.t.Log("║              GraphQL Response Dump               ║")
 	r.tester.t.Log("╠══════════════════════════════════════════════════╣")
@@ -454,5 +452,41 @@ func (r *Response) AssertDatabaseCountWhere(table string, conditions map[string]
  */
 func (r *Response) AssertDatabaseValue(table string, conditions map[string]interface{}, column string, expected interface{}) *Response {
 	assertions.NewDatabaseAssertions(r, r.tester).AssertDatabaseValue(table, conditions, column, expected)
+	return r
+}
+
+/**
+ * AssertData asserts that the response data field is not nil.
+ *
+ * Use this as a quick check that the server returned data.
+ * For more specific checks, use AssertJSON or AssertJSONPath.
+ *
+ * Returns:
+ *   *Response for chaining
+ *
+ * Example:
+ *   response.AssertData().AssertJSONPath("data.user.name", "John Doe")
+ */
+func (r *Response) AssertData() *Response {
+	if r.data == nil {
+		r.tester.t.Errorf("❌ Expected data field, got nil")
+		r.Debug()
+	}
+	return r
+}
+
+/**
+ * AssertDataNil asserts that the response data field is nil.
+ *
+ * Use this when you expect no data to be returned (e.g., certain error scenarios).
+ *
+ * Returns:
+ *   *Response for chaining
+ */
+func (r *Response) AssertDataNil() *Response {
+	if r.data != nil {
+		r.tester.t.Errorf("❌ Expected data to be nil")
+		r.Debug()
+	}
 	return r
 }

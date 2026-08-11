@@ -104,5 +104,5 @@ type DebuggableResponse interface {
 	Debug()
 
 	// Dump prints the full response details for inspection.
-	Dump()
+	Dump() DebuggableResponse
 }

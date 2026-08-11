@@ -303,37 +303,205 @@ func (it *IsolatedTester) Errors() []error {
  *       },
  *   }, nil)
  */
+//func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *ConcurrentConfig) {
+//	if config == nil {
+//		config = DefaultConcurrentConfig()
+//	}
+//
+//	if !config.Enabled {
+//		// Fall back to sequential execution
+//		tester.runSequential(tests, config)
+//		return
+//	}
+//
+//	// Set max parallelism
+//	maxParallel := config.MaxParallel
+//	if maxParallel <= 0 {
+//		maxParallel = 4 // Default to 4 concurrent tests
+//	}
+//
+//	// Create semaphore for concurrency control
+//	sem := make(chan struct{}, maxParallel)
+//
+//	// WaitGroup to wait for all tests
+//	var wg sync.WaitGroup
+//
+//	// Channel for fail-fast signaling
+//	failChan := make(chan struct{})
+//
+//	// Mutex for error collection
+//	var errorsMu sync.Mutex
+//	var allErrors []error
+//
+//	// Track if any test failed
+//	hasFailed := false
+//	var failedMu sync.Mutex
+//
+//	tester.t.Logf("🚀 Running %d tests with max %d concurrent", len(tests), maxParallel)
+//	startTime := time.Now()
+//
+//	for i, test := range tests {
+//		// Check if we should stop due to fail-fast
+//		if config.FailFast {
+//			select {
+//			case <-failChan:
+//				tester.t.Logf("⏭️  Skipping remaining tests due to FailFast")
+//				goto done
+//			default:
+//			}
+//		}
+//
+//		wg.Add(1)
+//
+//		go func(index int, testFunc func(*IsolatedTester)) {
+//			defer wg.Done()
+//
+//			// Acquire semaphore
+//			sem <- struct{}{}
+//			defer func() { <-sem }()
+//
+//			// Create isolated tester
+//			isolated := tester.isolate(config, index)
+//			defer isolated.Cleanup()
+//
+//			// Create a wrapper testing.T for this goroutine
+//			testT := &concurrentTestingT{
+//				T:        tester.t,
+//				isolated: isolated,
+//				index:    index,
+//			}
+//
+//			// Create a temporary tester with the concurrent testing.T
+//			isolated.Tester.t = testT
+//
+//			// Execute the test with timeout
+//			testDone := make(chan struct{})
+//			var testErr error
+//
+//			go func() {
+//				defer close(testDone)
+//
+//				// Recover from panics in test functions
+//				defer func() {
+//					if r := recover(); r != nil {
+//						testErr = fmt.Errorf("test %d panicked: %v", index, r)
+//						isolated.addError(testErr)
+//					}
+//				}()
+//
+//				testFunc(isolated)
+//			}()
+//
+//			// Wait for test completion or timeout
+//			timeout := config.Timeout
+//			if timeout == 0 {
+//				timeout = 30 * time.Second
+//			}
+//
+//			select {
+//			case <-testDone:
+//				// Test completed normally
+//				if len(isolated.Errors()) > 0 {
+//					testErr = fmt.Errorf("test %d had %d errors", index, len(isolated.Errors()))
+//				}
+//
+//			case <-time.After(timeout):
+//				testErr = fmt.Errorf("test %d timed out after %v", index, timeout)
+//				isolated.cancel()
+//
+//			case <-failChan:
+//				testErr = fmt.Errorf("test %d cancelled due to fail-fast", index)
+//				isolated.cancel()
+//			}
+//
+//			// Collect errors
+//			if testErr != nil {
+//				errorsMu.Lock()
+//				allErrors = append(allErrors, testErr)
+//				errorsMu.Unlock()
+//
+//				// Signal fail-fast if enabled
+//				if config.FailFast {
+//					failedMu.Lock()
+//					if !hasFailed {
+//						hasFailed = true
+//						close(failChan)
+//					}
+//					failedMu.Unlock()
+//				}
+//			}
+//
+//			tester.t.Logf("   [%d/%d] Test %d completed", index+1, len(tests), index)
+//
+//		}(i, test)
+//	}
+//
+//done:
+//	// Wait for all tests to complete
+//	wg.Wait()
+//
+//	elapsed := time.Since(startTime)
+//	tester.t.Logf("✅ All tests completed in %v", elapsed)
+//
+//	// Report any errors
+//	if len(allErrors) > 0 {
+//		tester.t.Logf("❌ %d test(s) had errors:", len(allErrors))
+//		for _, err := range allErrors {
+//			tester.t.Logf("   - %v", err)
+//		}
+//	}
+//}
+
+/**
+ * runSequential runs tests one after another when parallel is disabled.
+ *
+ * Parameters:
+ *   tests  - Test functions to run
+ *   config - Concurrent configuration
+ */
+//func (tester *Tester) runSequential(tests []func(*IsolatedTester), config *ConcurrentConfig) {
+//	tester.t.Logf("📋 Running %d tests sequentially", len(tests))
+//
+//	for i, test := range tests {
+//		isolated := tester.isolate(config, i)
+//		defer isolated.Cleanup()
+//
+//		// Create a sequential testing.T wrapper
+//		testT := &sequentialTestingT{
+//			T:        tester.t,
+//			isolated: isolated,
+//		}
+//
+//		isolated.Tester.t = testT
+//
+//		tester.t.Logf("   [%d/%d] Running test...", i+1, len(tests))
+//		test(isolated)
+//	}
+//}
+
+/**
+ * RunParallel executes multiple test functions concurrently.
+ */
 func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *ConcurrentConfig) {
 	if config == nil {
 		config = DefaultConcurrentConfig()
 	}
 
 	if !config.Enabled {
-		// Fall back to sequential execution
 		tester.runSequential(tests, config)
 		return
 	}
 
-	// Set max parallelism
 	maxParallel := config.MaxParallel
 	if maxParallel <= 0 {
-		maxParallel = 4 // Default to 4 concurrent tests
+		maxParallel = 4
 	}
 
-	// Create semaphore for concurrency control
 	sem := make(chan struct{}, maxParallel)
-
-	// WaitGroup to wait for all tests
 	var wg sync.WaitGroup
-
-	// Channel for fail-fast signaling
 	failChan := make(chan struct{})
-
-	// Mutex for error collection
 	var errorsMu sync.Mutex
 	var allErrors []error
-
-	// Track if any test failed
 	hasFailed := false
 	var failedMu sync.Mutex
 
@@ -341,7 +509,6 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 	startTime := time.Now()
 
 	for i, test := range tests {
-		// Check if we should stop due to fail-fast
 		if config.FailFast {
 			select {
 			case <-failChan:
@@ -356,43 +523,27 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 		go func(index int, testFunc func(*IsolatedTester)) {
 			defer wg.Done()
 
-			// Acquire semaphore
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Create isolated tester
 			isolated := tester.isolate(config, index)
 			defer isolated.Cleanup()
 
-			// Create a wrapper testing.T for this goroutine
-			testT := &concurrentTestingT{
-				T:        tester.t,
-				isolated: isolated,
-				index:    index,
-			}
-
-			// Create a temporary tester with the concurrent testing.T
-			isolated.Tester.t = testT
-
-			// Execute the test with timeout
+			// Execute the test with panic recovery
 			testDone := make(chan struct{})
 			var testErr error
 
 			go func() {
 				defer close(testDone)
-
-				// Recover from panics in test functions
 				defer func() {
 					if r := recover(); r != nil {
 						testErr = fmt.Errorf("test %d panicked: %v", index, r)
 						isolated.addError(testErr)
 					}
 				}()
-
 				testFunc(isolated)
 			}()
 
-			// Wait for test completion or timeout
 			timeout := config.Timeout
 			if timeout == 0 {
 				timeout = 30 * time.Second
@@ -400,27 +551,22 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 
 			select {
 			case <-testDone:
-				// Test completed normally
 				if len(isolated.Errors()) > 0 {
 					testErr = fmt.Errorf("test %d had %d errors", index, len(isolated.Errors()))
 				}
-
 			case <-time.After(timeout):
 				testErr = fmt.Errorf("test %d timed out after %v", index, timeout)
 				isolated.cancel()
-
 			case <-failChan:
 				testErr = fmt.Errorf("test %d cancelled due to fail-fast", index)
 				isolated.cancel()
 			}
 
-			// Collect errors
 			if testErr != nil {
 				errorsMu.Lock()
 				allErrors = append(allErrors, testErr)
 				errorsMu.Unlock()
 
-				// Signal fail-fast if enabled
 				if config.FailFast {
 					failedMu.Lock()
 					if !hasFailed {
@@ -432,18 +578,14 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 			}
 
 			tester.t.Logf("   [%d/%d] Test %d completed", index+1, len(tests), index)
-
 		}(i, test)
 	}
 
 done:
-	// Wait for all tests to complete
 	wg.Wait()
-
 	elapsed := time.Since(startTime)
 	tester.t.Logf("✅ All tests completed in %v", elapsed)
 
-	// Report any errors
 	if len(allErrors) > 0 {
 		tester.t.Logf("❌ %d test(s) had errors:", len(allErrors))
 		for _, err := range allErrors {
@@ -453,11 +595,7 @@ done:
 }
 
 /**
- * runSequential runs tests one after another when parallel is disabled.
- *
- * Parameters:
- *   tests  - Test functions to run
- *   config - Concurrent configuration
+ * runSequential runs tests one after another.
  */
 func (tester *Tester) runSequential(tests []func(*IsolatedTester), config *ConcurrentConfig) {
 	tester.t.Logf("📋 Running %d tests sequentially", len(tests))
@@ -466,19 +604,21 @@ func (tester *Tester) runSequential(tests []func(*IsolatedTester), config *Concu
 		isolated := tester.isolate(config, i)
 		defer isolated.Cleanup()
 
-		// Create a sequential testing.T wrapper
-		testT := &sequentialTestingT{
-			T:        tester.t,
-			isolated: isolated,
-		}
-
-		isolated.Tester.t = testT
-
 		tester.t.Logf("   [%d/%d] Running test...", i+1, len(tests))
-		test(isolated)
+
+		// Execute with panic recovery
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					isolated.addError(fmt.Errorf("test %d panicked: %v", i, r))
+				}
+			}()
+			test(isolated)
+		}()
 	}
 }
 
+//
 /**
  * isolate creates an isolated tester for concurrent or sequential execution.
  *
@@ -537,7 +677,7 @@ func (tester *Tester) isolate(config *ConcurrentConfig, index int) *IsolatedTest
 				adapter:  tester.dbAdapter,
 				tx:       isolatedTx,
 				isActive: true,
-				debug:    tester.config.Debug,
+				debug:    tester.config.debugEnabled,
 			}
 		}
 	}
@@ -692,45 +832,51 @@ func (t *sequentialTestingT) Fatalf(format string, args ...interface{}) {
  *       t.It("can delete zones", func(t *Tester) { ... })
  *   })
  */
+//func (tester *Tester) DescribeParallel(description string, config *ConcurrentConfig, fn func(*Tester)) {
+//	tester.t.Helper()
+//	tester.t.Logf("\n📋 %s (Parallel)", description)
+//
+//	// Collect all It blocks
+//	type testCase struct {
+//		name string
+//		fn   func(*Tester)
+//	}
+//
+//	var tests []testCase
+//
+//	// Create a temporary tester that collects It blocks instead of running them
+//	collector := tester.clone()
+//	collector.t = tester.t
+//
+//	// Override It to collect instead of execute
+//	originalRun := tester.t.Run
+//	defer func() { tester.t.Run() = originalRun }()
+//
+//	// This is a simplified approach - in practice, you'd use a proper collector
+//	// For now, we run tests sequentially within the parallel group
+//	fn(collector)
+//
+//	if len(tests) == 0 {
+//		// If no tests were collected, just run the function normally
+//		fn(tester)
+//		return
+//	}
+//
+//	// Run collected tests in parallel
+//	parallelTests := make([]func(*IsolatedTester), len(tests))
+//	for i, tc := range tests {
+//		testFn := tc.fn
+//		parallelTests[i] = func(it *IsolatedTester) {
+//			tester.t.Logf("   Running: %s", tc.name)
+//			testFn(it.Tester)
+//		}
+//	}
+//
+//	tester.RunParallel(parallelTests, config)
+//}
+
 func (tester *Tester) DescribeParallel(description string, config *ConcurrentConfig, fn func(*Tester)) {
 	tester.t.Helper()
 	tester.t.Logf("\n📋 %s (Parallel)", description)
-
-	// Collect all It blocks
-	type testCase struct {
-		name string
-		fn   func(*Tester)
-	}
-
-	var tests []testCase
-
-	// Create a temporary tester that collects It blocks instead of running them
-	collector := tester.clone()
-	collector.t = tester.t
-
-	// Override It to collect instead of execute
-	originalRun := tester.t.Run
-	defer func() { tester.t.Run = originalRun }()
-
-	// This is a simplified approach - in practice, you'd use a proper collector
-	// For now, we run tests sequentially within the parallel group
-	fn(collector)
-
-	if len(tests) == 0 {
-		// If no tests were collected, just run the function normally
-		fn(tester)
-		return
-	}
-
-	// Run collected tests in parallel
-	parallelTests := make([]func(*IsolatedTester), len(tests))
-	for i, tc := range tests {
-		testFn := tc.fn
-		parallelTests[i] = func(it *IsolatedTester) {
-			tester.t.Logf("   Running: %s", tc.name)
-			testFn(it.Tester)
-		}
-	}
-
-	tester.RunParallel(parallelTests, config)
+	fn(tester)
 }

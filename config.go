@@ -248,7 +248,7 @@ type PackageConfig struct {
  * Implements types.TesterConfigInterface.
  */
 func (c *Config) Debug() bool {
-	return c.Debug()
+	return c.debugEnabled
 }
 
 /**

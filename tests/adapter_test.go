@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"github.com/go-chi/chi/v5"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	appHttp "github.com/mwangaben/graphqltester/pkg/adapters/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +16,7 @@ import (
  * library adapter creates a working test server.
  */
 func TestNetHTTPAdapter_Setup_CreatesServer(t *testing.T) {
-	adapter := &NetHTTPAdapter{}
+	adapter := &appHttp.NetHTTPAdapter{}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -39,7 +41,7 @@ func TestNetHTTPAdapter_Setup_CreatesServer(t *testing.T) {
  * middleware is correctly applied to the handler.
  */
 func TestNetHTTPAdapter_AddMiddleware_AppliesMiddleware(t *testing.T) {
-	adapter := &NetHTTPAdapter{}
+	adapter := &appHttp.NetHTTPAdapter{}
 
 	baseHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Base", "true")
@@ -76,7 +78,7 @@ func TestNetHTTPAdapter_AddMiddleware_AppliesMiddleware(t *testing.T) {
  * creates a working test server with Gin framework.
  */
 func TestGinAdapter_Setup_CreatesGinServer(t *testing.T) {
-	adapter := NewGinAdapter()
+	adapter := appHttp.NewGinAdapter()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -100,7 +102,7 @@ func TestGinAdapter_Setup_CreatesGinServer(t *testing.T) {
  * creates a working test server with Echo framework.
  */
 func TestEchoAdapter_Setup_CreatesEchoServer(t *testing.T) {
-	adapter := NewEchoAdapter(false)
+	adapter := appHttp.NewEchoAdapter(false)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -123,7 +125,7 @@ func TestEchoAdapter_Setup_CreatesEchoServer(t *testing.T) {
  * creates a working test server with Chi router.
  */
 func TestChiAdapter_Setup_CreatesChiServer(t *testing.T) {
-	adapter := NewChiAdapter()
+	adapter := appHttp.NewChiAdapter()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -146,7 +148,7 @@ func TestChiAdapter_Setup_CreatesChiServer(t *testing.T) {
  * work correctly for organizing routes.
  */
 func TestChiAdapter_Group_CreatesRouteGroup(t *testing.T) {
-	adapter := NewChiAdapter()
+	adapter := appHttp.NewChiAdapter()
 
 	groupMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -180,10 +182,10 @@ func TestChiAdapter_Group_CreatesRouteGroup(t *testing.T) {
  */
 func TestFrameworkAdapter_InterfaceImplementation(t *testing.T) {
 	// These will fail at compile time if the interface isn't implemented
-	var _ FrameworkAdapter = &NetHTTPAdapter{}
-	var _ FrameworkAdapter = &GinAdapter{}
-	var _ FrameworkAdapter = &EchoAdapter{}
-	var _ FrameworkAdapter = &ChiAdapter{}
+	var _ appHttp.FrameworkAdapter = &appHttp.NetHTTPAdapter{}
+	var _ appHttp.FrameworkAdapter = &appHttp.GinAdapter{}
+	var _ appHttp.FrameworkAdapter = &appHttp.EchoAdapter{}
+	var _ appHttp.FrameworkAdapter = &appHttp.ChiAdapter{}
 
 	// Test passes if we get here (compile-time check)
 	assert.True(t, true)

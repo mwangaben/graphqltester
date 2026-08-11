@@ -119,7 +119,7 @@ func (fb *FactoryBuilder) Create(attrs ...map[string]interface{}) interface{} {
 	// Use the factory package to create instances
 	// This is a placeholder - actual implementation depends on your factory package API
 
-	if fb.tester.config.Debug {
+	if fb.tester.config.debugEnabled {
 		fb.tester.t.Logf("🏭 Creating %d %s(s) with attributes: %v", fb.count, fb.name, attributes)
 	}
 
@@ -145,7 +145,7 @@ func (fb *FactoryBuilder) Create(attrs ...map[string]interface{}) interface{} {
  */
 func (fb *FactoryBuilder) Make(attrs ...map[string]interface{}) interface{} {
 	// Similar to Create but doesn't persist
-	if fb.tester.config.Debug {
+	if fb.tester.config.debugEnabled {
 		fb.tester.t.Logf("🏭 Making %d %s(s) (without persisting)", fb.count, fb.name)
 	}
 
@@ -271,13 +271,13 @@ func (fb *FactoryBuilder) CreateMany(count int, attrs ...map[string]interface{})
  *   })
  */
 func (tester *Tester) Seed(seeder func()) *Tester {
-	if tester.config.Debug {
+	if tester.config.debugEnabled {
 		tester.t.Logf("🌱 Running seeder...")
 	}
 
 	seeder()
 
-	if tester.config.Debug {
+	if tester.config.debugEnabled {
 		tester.t.Logf("✅ Seeder completed")
 	}
 

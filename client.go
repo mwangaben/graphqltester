@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/mwangaben/graphqltester/types"
 )
 
 /**
@@ -69,6 +71,10 @@ func NewGraphQLClient(tester *Tester) *GraphQLClient {
 	}
 }
 
+// ============================================================================
+// Public Methods
+// ============================================================================
+
 /**
  * GraphQL sends a GraphQL query or mutation to the server.
  *
@@ -119,9 +125,9 @@ func (c *GraphQLClient) GraphQL(query string, vars ...map[string]interface{}) *R
  * - Content negotiation
  *
  * Parameters:
- *   query   - The GraphQL query string
+ *   query     - The GraphQL query string
  *   variables - Query variables
- *   headers - Custom HTTP headers to include in the request
+ *   headers   - Custom HTTP headers to include in the request
  *
  * Returns:
  *   *Response wrapping the GraphQL response
@@ -129,7 +135,7 @@ func (c *GraphQLClient) GraphQL(query string, vars ...map[string]interface{}) *R
  * Example:
  *   client.GraphQLWithHeaders(`{ version }`, nil, map[string]string{
  *       "X-API-Version": "2024-01",
- *   }).AssertJSONPath("data.version", "2024-01")
+ *   }).AssertJSONPath("version", "2024-01")
  */
 func (c *GraphQLClient) GraphQLWithHeaders(
 	query string,
@@ -160,7 +166,7 @@ func (c *GraphQLClient) GraphQLWithHeaders(
  *   `
  *
  *   client.GraphQLNamed(query, "GetAdmins", nil).
- *       AssertJSONCount("data.admins", 2)
+ *       AssertJSONCount("admins", 2)
  */
 func (c *GraphQLClient) GraphQLNamed(
 	query string,
@@ -228,204 +234,6 @@ func (c *GraphQLClient) Mutation(query string, vars ...map[string]interface{}) *
 }
 
 /**
- * doRequest is the internal method that handles the complete request lifecycle.
- *
- * This method:
- * 1. Constructs the GraphQL request payload
- * 2. Sets up HTTP headers (auth, tenant, custom)
- * 3. Executes the HTTP request
- * 4. Parses and returns the response
- *
- * Parameters:
- *   query         - The GraphQL query string
- *   variables     - Query variables
- *   headers       - Additional HTTP headers
- *   operationName - Named operation to execute (empty string if none)
- *
- * Returns:
- *   *Response with the parsed GraphQL response
- */
-func (c *GraphQLClient) doRequest(
-	query string,
-	variables map[string]interface{},
-	headers map[string]string,
-	operationName string,
-) *Response {
-	// Construct the GraphQL request payload
-	request := GraphQLRequest{
-		Query:     query,
-		Variables: variables,
-	}
-
-	if operationName != "" {
-		request.OperationName = operationName
-	}
-
-	// Marshal the request to JSON
-	body, err := json.Marshal(request)
-	if err != nil {
-		c.tester.t.Fatalf("❌ Failed to marshal GraphQL request: %v", err)
-	}
-
-	// Build the URL
-	url := c.baseURL + c.tester.config.Endpoint
-
-	// Create the HTTP request
-	httpReq, err := http.NewRequestWithContext(
-		c.tester.ctx,
-		"POST",
-		url,
-		bytes.NewBuffer(body),
-	)
-	if err != nil {
-		c.tester.t.Fatalf("❌ Failed to create HTTP request: %v", err)
-	}
-
-	// Set default headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-
-	// Inject authentication token if the tester has one
-	if c.tester.currentToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.tester.currentToken)
-		if c.tester.config.Debug {
-			c.tester.t.Logf("🔑 Using auth token: %s...", c.tester.currentToken[:10])
-		}
-	}
-
-	// Add tenant header if multi-tenancy is enabled and a tenant is selected
-	if c.tester.config.Tenancy.Enabled && c.tester.tenant != nil {
-		headerName := c.tester.config.Tenancy.HeaderName
-		httpReq.Header.Set(headerName, c.tester.tenant.ID)
-		if c.tester.config.Debug {
-			c.tester.t.Logf("🏢 Using tenant: %s", c.tester.tenant.ID)
-		}
-	}
-
-	// Apply custom headers
-	for key, value := range headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	// Log the request in debug mode
-	if c.tester.config.Debug {
-		c.logRequest(httpReq, query, variables)
-	}
-
-	// Execute the HTTP request
-	startTime := time.Now()
-	httpResp, err := c.httpClient.Do(httpReq)
-	elapsed := time.Since(startTime)
-
-	if err != nil {
-		c.tester.t.Fatalf("❌ HTTP request failed after %v: %v", elapsed, err)
-	}
-	defer httpResp.Body.Close()
-
-	// Read the response body
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		c.tester.t.Fatalf("❌ Failed to read response body: %v", err)
-	}
-
-	// Log the response in debug mode
-	if c.tester.config.Debug {
-		c.logResponse(httpResp, respBody, elapsed)
-	}
-
-	// Parse the GraphQL response
-	var graphqlResp Response
-	if err := json.Unmarshal(respBody, &graphqlResp); err != nil {
-		// If parsing fails, create a response with the raw body for debugging
-		c.tester.t.Logf("⚠️  Failed to parse response as GraphQL: %v", err)
-		c.tester.t.Logf("   Raw response: %s", string(respBody))
-
-		graphqlResp = Response{
-			Errors: []*GraphQLError{
-				{
-					Message: fmt.Sprintf("Failed to parse response: %v", err),
-					Extensions: map[string]interface{}{
-						"raw_body": string(respBody),
-					},
-				},
-			},
-		}
-	}
-
-	// Attach metadata to the response
-	graphqlResp.tester = c.tester
-	graphqlResp.statusCode = httpResp.StatusCode
-	graphqlResp.rawBody = respBody
-	graphqlResp.elapsed = elapsed
-
-	return &graphqlResp
-}
-
-/**
- * logRequest logs the GraphQL request details in debug mode.
- *
- * This provides visibility into:
- * - The full query being sent
- * - Variables being passed
- * - HTTP headers being sent
- *
- * Parameters:
- *   req       - The HTTP request
- *   query     - The GraphQL query
- *   variables - The query variables
- */
-func (c *GraphQLClient) logRequest(req *http.Request, query string, variables map[string]interface{}) {
-	c.tester.t.Logf("📤 GraphQL Request:")
-	c.tester.t.Logf("   URL: %s", req.URL.String())
-	c.tester.t.Logf("   Headers: %v", req.Header)
-
-	// Truncate long queries for readability
-	if len(query) > 500 {
-		c.tester.t.Logf("   Query: %s... (truncated, total %d chars)", query[:500], len(query))
-	} else {
-		c.tester.t.Logf("   Query: %s", strings.TrimSpace(query))
-	}
-
-	if len(variables) > 0 {
-		varsJSON, _ := json.MarshalIndent(variables, "   ", "  ")
-		c.tester.t.Logf("   Variables: %s", string(varsJSON))
-	}
-}
-
-/**
- * logResponse logs the GraphQL response details in debug mode.
- *
- * Provides visibility into:
- * - HTTP status code
- * - Response time
- * - Response body (truncated for large responses)
- * - GraphQL errors if present
- *
- * Parameters:
- *   resp     - The HTTP response
- *   body     - The response body bytes
- *   elapsed  - Time taken for the request
- */
-func (c *GraphQLClient) logResponse(resp *http.Response, body []byte, elapsed time.Duration) {
-	c.tester.t.Logf("📥 GraphQL Response: (took %v)", elapsed)
-	c.tester.t.Logf("   Status: %d %s", resp.StatusCode, resp.Status)
-
-	// Truncate long responses for readability
-	if len(body) > 1000 {
-		c.tester.t.Logf("   Body: %s... (truncated, total %d bytes)",
-			string(body[:1000]), len(body))
-	} else {
-		// Pretty print JSON if possible
-		var prettyJSON bytes.Buffer
-		if err := json.Indent(&prettyJSON, body, "   ", "  "); err == nil {
-			c.tester.t.Logf("   Body:\n%s", prettyJSON.String())
-		} else {
-			c.tester.t.Logf("   Body: %s", string(body))
-		}
-	}
-}
-
-/**
  * Batch sends multiple GraphQL queries in a single HTTP request.
  *
  * GraphQL supports sending an array of queries in a single request.
@@ -435,7 +243,7 @@ func (c *GraphQLClient) logResponse(resp *http.Response, body []byte, elapsed ti
  *   queries - Array of GraphQL requests to batch together
  *
  * Returns:
- *   *Response array with each query's response
+ *   []*Response array with each query's response
  *
  * Example:
  *   responses := client.Batch([]GraphQLRequest{
@@ -466,18 +274,30 @@ func (c *GraphQLClient) Batch(queries []GraphQLRequest) []*Response {
 
 	respBody, _ := io.ReadAll(httpResp.Body)
 
-	// Parse batch response
-	var batchResponses []Response
-	if err := json.Unmarshal(respBody, &batchResponses); err != nil {
+	// Parse batch response using intermediate struct
+	var rawBatchResponses []struct {
+		Data       json.RawMessage        `json:"data"`
+		Errors     []*types.GraphQLError  `json:"errors"`
+		Extensions map[string]interface{} `json:"extensions"`
+	}
+
+	if err := json.Unmarshal(respBody, &rawBatchResponses); err != nil {
 		c.tester.t.Fatalf("❌ Failed to parse batch response: %v", err)
 	}
 
-	// Attach tester to each response
-	responses := make([]*Response, len(batchResponses))
-	for i := range batchResponses {
-		batchResponses[i].tester = c.tester
-		batchResponses[i].statusCode = httpResp.StatusCode
-		responses[i] = &batchResponses[i]
+	responses := make([]*Response, len(rawBatchResponses))
+	for i, raw := range rawBatchResponses {
+		var data interface{}
+		if raw.Data != nil {
+			json.Unmarshal(raw.Data, &data)
+		}
+		responses[i] = &Response{
+			tester:     c.tester,
+			statusCode: httpResp.StatusCode,
+			data:       data,
+			errors:     raw.Errors,
+			extensions: raw.Extensions,
+		}
 	}
 
 	return responses
@@ -567,14 +387,265 @@ func (c *GraphQLClient) Upload(
 
 	respBody, _ := io.ReadAll(httpResp.Body)
 
-	var graphqlResp Response
-	json.Unmarshal(respBody, &graphqlResp)
-	graphqlResp.tester = c.tester
-	graphqlResp.statusCode = httpResp.StatusCode
-	graphqlResp.rawBody = respBody
+	// Parse response using intermediate struct
+	var rawResponse struct {
+		Data       json.RawMessage        `json:"data"`
+		Errors     []*types.GraphQLError  `json:"errors"`
+		Extensions map[string]interface{} `json:"extensions"`
+	}
 
-	return &graphqlResp
+	json.Unmarshal(respBody, &rawResponse)
+
+	var data interface{}
+	if rawResponse.Data != nil {
+		json.Unmarshal(rawResponse.Data, &data)
+	}
+
+	return &Response{
+		tester:     c.tester,
+		statusCode: httpResp.StatusCode,
+		rawBody:    respBody,
+		data:       data,
+		errors:     rawResponse.Errors,
+		extensions: rawResponse.Extensions,
+	}
 }
+
+// ============================================================================
+// Internal Methods
+// ============================================================================
+
+/**
+ * doRequest is the internal method that handles the complete request lifecycle.
+ *
+ * This method:
+ * 1. Constructs the GraphQL request payload
+ * 2. Sets up HTTP headers (auth, tenant, custom)
+ * 3. Executes the HTTP request
+ * 4. Parses and returns the response
+ *
+ * Parameters:
+ *   query         - The GraphQL query string
+ *   variables     - Query variables
+ *   headers       - Additional HTTP headers
+ *   operationName - Named operation to execute (empty string if none)
+ *
+ * Returns:
+ *   *Response with the parsed GraphQL response
+ */
+func (c *GraphQLClient) doRequest(
+	query string,
+	variables map[string]interface{},
+	headers map[string]string,
+	operationName string,
+) *Response {
+	// Construct the GraphQL request payload
+	request := GraphQLRequest{
+		Query:     query,
+		Variables: variables,
+	}
+
+	if operationName != "" {
+		request.OperationName = operationName
+	}
+
+	// Marshal the request to JSON
+	body, err := json.Marshal(request)
+	if err != nil {
+		c.tester.t.Fatalf("❌ Failed to marshal GraphQL request: %v", err)
+	}
+
+	// Build the URL
+	url := c.baseURL + c.tester.config.Endpoint
+
+	// Create the HTTP request
+	httpReq, err := http.NewRequestWithContext(
+		c.tester.ctx,
+		"POST",
+		url,
+		bytes.NewBuffer(body),
+	)
+	if err != nil {
+		c.tester.t.Fatalf("❌ Failed to create HTTP request: %v", err)
+	}
+
+	// Set default headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	// Inject authentication token if the tester has one
+	if c.tester.currentToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.tester.currentToken)
+		if c.tester.config.Debug() {
+			prefixLen := len(c.tester.currentToken)
+			if prefixLen > 10 {
+				prefixLen = 10
+			}
+			c.tester.t.Logf("🔑 Using auth token: %s...", c.tester.currentToken[:prefixLen])
+		}
+	}
+
+	// Add tenant header if multi-tenancy is enabled and a tenant is selected
+	if c.tester.config.Tenancy != nil && c.tester.config.Tenancy.Enabled && c.tester.tenant != nil {
+		headerName := c.tester.config.Tenancy.HeaderName
+		httpReq.Header.Set(headerName, c.tester.tenant.ID)
+		if c.tester.config.Debug() {
+			c.tester.t.Logf("🏢 Using tenant: %s", c.tester.tenant.ID)
+		}
+	}
+
+	// Apply custom headers
+	for key, value := range headers {
+		httpReq.Header.Set(key, value)
+	}
+
+	// Log the request in debug mode
+	if c.tester.config.Debug() {
+		c.logRequest(httpReq, query, variables)
+	}
+
+	// Execute the HTTP request
+	startTime := time.Now()
+	httpResp, err := c.httpClient.Do(httpReq)
+	elapsed := time.Since(startTime)
+
+	if err != nil {
+		c.tester.t.Fatalf("❌ HTTP request failed after %v: %v", elapsed, err)
+	}
+	defer httpResp.Body.Close()
+
+	// Read the response body
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		c.tester.t.Fatalf("❌ Failed to read response body: %v", err)
+	}
+
+	// Log the response in debug mode
+	if c.tester.config.Debug() {
+		c.logResponse(httpResp, respBody, elapsed)
+	}
+
+	// Parse the GraphQL response using an intermediate struct with EXPORTED fields
+	// This is necessary because Response.data is private and json.Unmarshal
+	// can only set exported (uppercase) fields
+	var rawResponse struct {
+		Data       json.RawMessage        `json:"data"`
+		Errors     []*types.GraphQLError  `json:"errors"`
+		Extensions map[string]interface{} `json:"extensions"`
+	}
+
+	if err := json.Unmarshal(respBody, &rawResponse); err != nil {
+		// If parsing fails, create a response with the raw body for debugging
+		c.tester.t.Logf("⚠️  Failed to parse response as GraphQL: %v", err)
+		c.tester.t.Logf("   Raw response: %s", string(respBody))
+
+		return &Response{
+			tester:     c.tester,
+			statusCode: httpResp.StatusCode,
+			rawBody:    respBody,
+			elapsed:    elapsed,
+			errors: []*types.GraphQLError{
+				{
+					Message: fmt.Sprintf("Failed to parse response: %v", err),
+					Extensions: map[string]interface{}{
+						"raw_body": string(respBody),
+					},
+				},
+			},
+		}
+	}
+
+	// Parse the inner data field into an interface{}
+	var data interface{}
+	if rawResponse.Data != nil {
+		if err := json.Unmarshal(rawResponse.Data, &data); err != nil {
+			c.tester.t.Logf("⚠️  Failed to parse data field: %v", err)
+		}
+	}
+
+	// Create the properly parsed response
+	return &Response{
+		tester:     c.tester,
+		statusCode: httpResp.StatusCode,
+		rawBody:    respBody,
+		elapsed:    elapsed,
+		data:       data,
+		errors:     rawResponse.Errors,
+		extensions: rawResponse.Extensions,
+	}
+}
+
+// ============================================================================
+// Logging Methods
+// ============================================================================
+
+/**
+ * logRequest logs the GraphQL request details in debug mode.
+ *
+ * This provides visibility into:
+ * - The full query being sent
+ * - Variables being passed
+ * - HTTP headers being sent
+ *
+ * Parameters:
+ *   req       - The HTTP request
+ *   query     - The GraphQL query
+ *   variables - The query variables
+ */
+func (c *GraphQLClient) logRequest(req *http.Request, query string, variables map[string]interface{}) {
+	c.tester.t.Logf("📤 GraphQL Request:")
+	c.tester.t.Logf("   URL: %s", req.URL.String())
+	c.tester.t.Logf("   Headers: %v", req.Header)
+
+	// Truncate long queries for readability
+	if len(query) > 500 {
+		c.tester.t.Logf("   Query: %s... (truncated, total %d chars)", query[:500], len(query))
+	} else {
+		c.tester.t.Logf("   Query: %s", strings.TrimSpace(query))
+	}
+
+	if len(variables) > 0 {
+		varsJSON, _ := json.MarshalIndent(variables, "   ", "  ")
+		c.tester.t.Logf("   Variables: %s", string(varsJSON))
+	}
+}
+
+/**
+ * logResponse logs the GraphQL response details in debug mode.
+ *
+ * Provides visibility into:
+ * - HTTP status code
+ * - Response time
+ * - Response body (truncated for large responses)
+ * - GraphQL errors if present
+ *
+ * Parameters:
+ *   resp     - The HTTP response
+ *   body     - The response body bytes
+ *   elapsed  - Time taken for the request
+ */
+func (c *GraphQLClient) logResponse(resp *http.Response, body []byte, elapsed time.Duration) {
+	c.tester.t.Logf("📥 GraphQL Response: (took %v)", elapsed)
+	c.tester.t.Logf("   Status: %d %s", resp.StatusCode, resp.Status)
+
+	// Truncate long responses for readability
+	if len(body) > 1000 {
+		c.tester.t.Logf("   Body: %s... (truncated, total %d bytes)",
+			string(body[:1000]), len(body))
+	} else {
+		// Pretty print JSON if possible
+		var prettyJSON bytes.Buffer
+		if err := json.Indent(&prettyJSON, body, "   ", "  "); err == nil {
+			c.tester.t.Logf("   Body:\n%s", prettyJSON.String())
+		} else {
+			c.tester.t.Logf("   Body: %s", string(body))
+		}
+	}
+}
+
+// ============================================================================
+// Types
+// ============================================================================
 
 /**
  * GraphQLRequest represents the structure of a GraphQL HTTP request body.
@@ -594,38 +665,4 @@ type GraphQLRequest struct {
 	// contains multiple named operations.
 	// Optional: Required only for multi-operation documents.
 	OperationName string `json:"operationName,omitempty"`
-}
-
-/**
- * GraphQLError represents an error in a GraphQL response.
- *
- * Follows the GraphQL error specification with additional extensions
- * for validation, authentication, and custom error categories.
- */
-type GraphQLError struct {
-	// Message is the human-readable error description.
-	Message string `json:"message"`
-
-	// Locations points to the location in the GraphQL document where the error occurred.
-	// Optional: May be omitted for non-document errors (e.g., network errors).
-	Locations []Location `json:"locations,omitempty"`
-
-	// Path indicates the path in the response data where the error occurred.
-	// Example: ["user", "email"] means the error is in data.user.email
-	Path []interface{} `json:"path,omitempty"`
-
-	// Extensions contains additional error metadata.
-	// Common keys: "category", "validation", "code"
-	Extensions map[string]interface{} `json:"extensions,omitempty"`
-}
-
-/**
- * Location points to a position in a GraphQL document.
- */
-type Location struct {
-	// Line is the 1-indexed line number.
-	Line int `json:"line"`
-
-	// Column is the 1-indexed column number.
-	Column int `json:"column"`
 }
