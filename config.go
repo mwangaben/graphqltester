@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/graph-gophers/graphql-go"
+	"github.com/mwangaben/graphqltester/pkg/factory"
 	"net/http"
 	"os"
 	"time"
@@ -238,6 +239,10 @@ type PackageConfig struct {
 	// Validation integrates the validation package for input validation testing.
 	Validation interface{} // Will be typed to *validation.Validator when available
 }
+
+// SimpleFactory is the type for the Laravel-style factory.
+// This is used in PackageConfig.Factory.
+type SimpleFactory = factory.Factory
 
 // ============================================================================
 // types.TesterConfigInterface Implementation

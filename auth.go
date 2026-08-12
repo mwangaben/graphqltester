@@ -320,7 +320,9 @@ func (tester *Tester) GivenUser(roleName string, permissionName string, user ...
  *   tester.GivePermissionTo(role, perm)
  */
 func (tester *Tester) GivePermissionTo(role interface{}, permission interface{}) *Tester {
-	if tester.config.Packages.Permission == nil {
+	if tester.config == nil ||
+		tester.config.Packages == nil ||
+		tester.config.Packages.Permission == nil {
 		tester.t.Fatal("❌ Permission package is required for GivePermissionTo. Configure it in PackageConfig.")
 	}
 
@@ -354,7 +356,9 @@ func (tester *Tester) GivePermissionTo(role interface{}, permission interface{})
  *   tester.AssignRole(user, role)
  */
 func (tester *Tester) AssignRole(user interface{}, role interface{}) *Tester {
-	if tester.config.Packages.Permission == nil {
+	if tester.config == nil ||
+		tester.config.Packages == nil ||
+		tester.config.Packages.Permission == nil {
 		tester.t.Fatal("❌ Permission package is required for AssignRole. Configure it in PackageConfig.")
 	}
 
@@ -390,13 +394,13 @@ func (tester *Tester) HasPermission(permission string) bool {
 	if tester.currentUser == nil {
 		return false
 	}
-
-	if tester.config.Packages.Permission == nil {
+	// ✅ Check Packages is not nil before accessing its fields
+	if tester.config == nil ||
+		tester.config.Packages == nil ||
+		tester.config.Packages.Permission == nil {
 		return false
 	}
-
-	// This will use your actual permission package's Can method
-	return false // Placeholder
+	return false
 }
 
 /**
@@ -418,12 +422,15 @@ func (tester *Tester) HasRole(role string) bool {
 		return false
 	}
 
-	if tester.config.Packages.Permission == nil {
+	// Safely check all pointers in the chain
+	if tester.config == nil ||
+		tester.config.Packages == nil ||
+		tester.config.Packages.Permission == nil {
 		return false
 	}
 
-	// This will use your actual permission package's HasRole method
-	return false // Placeholder
+	// Integration with permission package would go here
+	return false
 }
 
 // ============================================================================
@@ -504,6 +511,11 @@ func (tester *Tester) GetCurrentUser() interface{} {
 func (tester *Tester) getOrCreatePermission(name string) interface{} {
 	// Check if permission exists using factory or database
 	// If not, create it
+	if tester.config == nil ||
+		tester.config.Packages == nil ||
+		tester.config.Packages.Permission == nil {
+		return nil
+	}
 
 	// Placeholder - implementation depends on your permission package
 	if tester.config.debugEnabled {
