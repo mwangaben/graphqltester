@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"github.com/mwangaben/graphqltester/types"
 	"net/http"
 	"time"
 )
@@ -40,25 +41,30 @@ func ContextPropagationMiddleware(tester interface{}) Middleware {
 			if requestID == "" {
 				requestID = generateRequestID()
 			}
-			ctx = context.WithValue(ctx, contextKey("request_id"), requestID)
+			ctx = context.WithValue(ctx, types.RequestIDKey, requestID)
 			w.Header().Set("X-Request-ID", requestID)
 
 			// Add request start time
-			ctx = context.WithValue(ctx, contextKey("request_start_time"), time.Now())
+			ctx = context.WithValue(ctx, types.RequestStartTimeKey, time.Now())
 
 			// Propagate tester context values
 			if testerWithCtx, ok := tester.(interface{ Context() context.Context }); ok {
 				testerCtx := testerWithCtx.Context()
 				if testerCtx != nil {
-					// Copy known context values
-					for _, key := range []string{"user", "user_id", "tenant_id", "test_name"} {
-						if val := testerCtx.Value(contextKey(key)); val != nil {
-							ctx = context.WithValue(ctx, contextKey(key), val)
+					for _, key := range []types.ContextKey{
+						types.UserKey,
+						types.UserIDKey,
+						types.TenantIDKey,
+						types.TestNameKey,
+					} {
+						if val := testerCtx.Value(key); val != nil {
+							ctx = context.WithValue(ctx, key, val)
 						}
 					}
 				}
 			}
 
+			// ✅ IMPORTANT: Pass the modified context via r.WithContext()
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -76,21 +82,11 @@ func ContextPropagationMiddleware(tester interface{}) Middleware {
 func ResponseContextMiddleware(tester interface{}) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Wrap response writer to capture status code
 			rw := &responseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
-
 			next.ServeHTTP(rw, r)
-
-			// Store response info in context for assertions
-			ctx := r.Context()
-			ctx = context.WithValue(ctx, contextKey("response_status_code"), rw.statusCode)
-			ctx = context.WithValue(ctx, contextKey("response_headers"), rw.Header())
-
-			// Note: Context is updated after response is sent,
-			// primarily for logging/metrics purposes
 		})
 	}
 }
@@ -107,10 +103,8 @@ func RequestIDMiddleware() Middleware {
 			if requestID == "" {
 				requestID = generateRequestID()
 			}
-
 			w.Header().Set("X-Request-ID", requestID)
-			ctx := context.WithValue(r.Context(), contextKey("request_id"), requestID)
-
+			ctx := context.WithValue(r.Context(), types.RequestIDKey, requestID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -139,6 +133,10 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 		rw.wroteHeader = true
 	}
 	return rw.ResponseWriter.Write(b)
+}
+
+func (rw *responseWriter) StatusCode() int {
+	return rw.statusCode
 }
 
 // generateRequestID generates a unique request identifier.

@@ -509,12 +509,14 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 	startTime := time.Now()
 
 	for i, test := range tests {
+		// Check if we should stop due to fail-fast BEFORE starting new tests
 		if config.FailFast {
-			select {
-			case <-failChan:
+			failedMu.Lock()
+			failed := hasFailed
+			failedMu.Unlock()
+			if failed {
 				tester.t.Logf("⏭️  Skipping remaining tests due to FailFast")
-				goto done
-			default:
+				break // ← BREAK instead of goto
 			}
 		}
 
@@ -523,6 +525,7 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 		go func(index int, testFunc func(*IsolatedTester)) {
 			defer wg.Done()
 
+			// Acquire semaphore
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -531,14 +534,12 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 
 			// Execute the test with panic recovery
 			testDone := make(chan struct{})
-			var testErr error
 
 			go func() {
 				defer close(testDone)
 				defer func() {
 					if r := recover(); r != nil {
-						testErr = fmt.Errorf("test %d panicked: %v", index, r)
-						isolated.addError(testErr)
+						isolated.addError(fmt.Errorf("test %d panicked: %v", index, r))
 					}
 				}()
 				testFunc(isolated)
@@ -551,37 +552,51 @@ func (tester *Tester) RunParallel(tests []func(*IsolatedTester), config *Concurr
 
 			select {
 			case <-testDone:
+				// Test completed normally
 				if len(isolated.Errors()) > 0 {
-					testErr = fmt.Errorf("test %d had %d errors", index, len(isolated.Errors()))
-				}
-			case <-time.After(timeout):
-				testErr = fmt.Errorf("test %d timed out after %v", index, timeout)
-				isolated.cancel()
-			case <-failChan:
-				testErr = fmt.Errorf("test %d cancelled due to fail-fast", index)
-				isolated.cancel()
-			}
+					errorsMu.Lock()
+					allErrors = append(allErrors,
+						fmt.Errorf("test %d had %d errors", index, len(isolated.Errors())))
+					errorsMu.Unlock()
 
-			if testErr != nil {
-				errorsMu.Lock()
-				allErrors = append(allErrors, testErr)
-				errorsMu.Unlock()
-
-				if config.FailFast {
-					failedMu.Lock()
-					if !hasFailed {
-						hasFailed = true
-						close(failChan)
+					// Signal fail-fast if enabled
+					if config.FailFast {
+						failedMu.Lock()
+						if !hasFailed {
+							hasFailed = true
+							close(failChan) // Close channel to signal ALL goroutines
+						}
+						failedMu.Unlock()
 					}
-					failedMu.Unlock()
 				}
+
+			case <-time.After(timeout):
+				errorsMu.Lock()
+				allErrors = append(allErrors,
+					fmt.Errorf("test %d timed out after %v", index, timeout))
+				errorsMu.Unlock()
+				isolated.cancel()
+
+			case <-failChan:
+				// This test was cancelled by fail-fast
+				isolated.cancel()
+				// Wait briefly for the test to respond to cancellation
+				select {
+				case <-testDone:
+					// Test responded to cancellation
+				case <-time.After(100 * time.Millisecond):
+					// Test didn't respond in time, continue anyway
+				}
+				errorsMu.Lock()
+				allErrors = append(allErrors,
+					fmt.Errorf("test %d cancelled due to fail-fast", index))
+				errorsMu.Unlock()
 			}
 
 			tester.t.Logf("   [%d/%d] Test %d completed", index+1, len(tests), index)
 		}(i, test)
 	}
 
-done:
 	wg.Wait()
 	elapsed := time.Since(startTime)
 	tester.t.Logf("✅ All tests completed in %v", elapsed)
@@ -602,18 +617,23 @@ func (tester *Tester) runSequential(tests []func(*IsolatedTester), config *Concu
 
 	for i, test := range tests {
 		isolated := tester.isolate(config, i)
-		defer isolated.Cleanup()
 
-		tester.t.Logf("   [%d/%d] Running test...", i+1, len(tests))
-
-		// Execute with panic recovery
 		func() {
+			defer isolated.Cleanup()
 			defer func() {
 				if r := recover(); r != nil {
 					isolated.addError(fmt.Errorf("test %d panicked: %v", i, r))
 				}
 			}()
+
+			tester.t.Logf("   [%d/%d] Running test...", i+1, len(tests))
 			test(isolated)
+
+			// Check for errors and fail-fast
+			if config.FailFast && len(isolated.Errors()) > 0 {
+				tester.t.Logf("⏭️  Stopping due to FailFast")
+				return
+			}
 		}()
 	}
 }
@@ -771,6 +791,45 @@ func (t *concurrentTestingT) Fatalf(format string, args ...interface{}) {
 	// Don't actually call t.T.Fatalf as it calls os.Exit in some cases
 	// Instead, we use panic to stop execution in the goroutine
 	panic(fmt.Sprintf(format, args...))
+}
+
+/**
+ * Errorf records an error for FailFast detection.
+ * This overrides Tester.Errorf to capture errors in the isolated tester.
+ */
+func (it *IsolatedTester) Errorf(format string, args ...interface{}) {
+	it.mu.Lock()
+	it.errors = append(it.errors, fmt.Errorf(format, args...))
+	it.mu.Unlock()
+	// Log to the parent tester via the embedded Tester's Logf
+	it.Tester.Logf("[Isolated Test] ERROR: "+format, args...)
+}
+
+/**
+ * Fatalf records a fatal error and cancels the test context.
+ * This overrides Tester.Fatalf for FailFast support.
+ */
+func (it *IsolatedTester) Fatalf(format string, args ...interface{}) {
+	it.mu.Lock()
+	it.errors = append(it.errors, fmt.Errorf(format, args...))
+	it.mu.Unlock()
+	it.Tester.Logf("[Isolated Test] FATAL: "+format, args...)
+	// Cancel the isolated context to stop the test
+	it.cancel()
+}
+
+/**
+ * Helper marks the isolated test as a helper.
+ */
+func (it *IsolatedTester) Helper() {
+	// No-op for isolated tests
+}
+
+/**
+ * Name returns the test name.
+ */
+func (it *IsolatedTester) Name() string {
+	return it.id
 }
 
 //Logf

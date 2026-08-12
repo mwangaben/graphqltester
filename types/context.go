@@ -26,6 +26,9 @@ const (
 	// TenantIDKey stores the current tenant identifier
 	TenantIDKey ContextKey = "tenant_id"
 
+	// TestNameKey stores the name of the currently running test.
+	TestNameKey ContextKey = "test_name" // ← ADD THIS
+
 	// RequiredPermissionKey stores the required permission
 	RequiredPermissionKey ContextKey = "required_permission"
 

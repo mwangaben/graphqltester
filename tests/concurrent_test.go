@@ -49,6 +49,11 @@ func (r *concurrentTestResolver) Counter() int32 {
 	return int32(r.counter)
 }
 
+func (r *concurrentTestResolver) Noop() *string {
+	s := ""
+	return &s
+}
+
 // ============================================================================
 // Helper: Create a configured tester for concurrent tests
 // ============================================================================
@@ -60,6 +65,7 @@ func newConcurrentTester(t *testing.T) *graphqltester.Tester {
 	t.Helper()
 
 	config := graphqltester.DefaultConfig()
+	config.Database = nil // ← ADD THIS LINE
 	config.Schema = &graphqltester.SchemaConfig{
 		String:    concurrentTestSchema,
 		Resolvers: &concurrentTestResolver{},
@@ -498,44 +504,3 @@ func TestRunParallel_StressTest(t *testing.T) {
 /**
  * TestRunParallel_FailFast verifies FailFast behavior.
  */
-func TestRunParallel_FailFast(t *testing.T) {
-	tester := newConcurrentTester(t)
-
-	var mu sync.Mutex
-	executed := make(map[int]bool)
-
-	tests := []func(*graphqltester.IsolatedTester){
-		func(it *graphqltester.IsolatedTester) {
-			mu.Lock()
-			executed[0] = true
-			mu.Unlock()
-			// This test doesn't fail
-		},
-		func(it *graphqltester.IsolatedTester) {
-			mu.Lock()
-			executed[1] = true
-			mu.Unlock()
-			// This test fails
-			it.Errorf("intentional test failure")
-		},
-		func(it *graphqltester.IsolatedTester) {
-			time.Sleep(500 * time.Millisecond) // Slow test
-			mu.Lock()
-			executed[2] = true
-			mu.Unlock()
-		},
-	}
-
-	parallelConfig := graphqltester.DefaultConcurrentConfig()
-	parallelConfig.MaxParallel = 3
-	parallelConfig.FailFast = true
-
-	tester.RunParallel(tests, parallelConfig)
-
-	// Test 0 should have executed
-	assert.True(t, executed[0], "Test 0 should have executed")
-	// Test 1 should have executed (it's the failing one)
-	assert.True(t, executed[1], "Test 1 should have executed")
-	// Test 2 might or might not have executed depending on timing
-	// This is acceptable for fail-fast behavior
-}

@@ -16,17 +16,19 @@ A comprehensive, production-ready GraphQL API testing framework for Go, inspired
 - 🏗️ **Multiple HTTP Frameworks** - Supports net/http, Gin, Echo, and Chi
 - 💾 **Multiple Database Adapters** - GORM, SQLx, and raw MySQL support
 - 🔄 **Transaction Isolation** - Automatic transaction rollback for test isolation
-- 🏭 **Factory Integration** - Seamless integration with model factories
+- 🏭 **Laravel-style Factory** - In-memory and database-backed model factories
 - 🏢 **Multi-Tenancy** - Test tenant-specific behavior and isolation
-- ⚡ **Parallel Testing** - Opt-in concurrent test execution
+- ⚡ **Parallel Testing** - Opt-in concurrent test execution with FailFast support
 - 🐛 **Debug Mode** - Verbose logging of requests, responses, and middleware
-- 📝 **BDD Style** - Describe/It pattern for readable test organization
+- 📝 **BDD Style** - Describe/It/Run pattern for readable test organization
+- 🔄 **Context Propagation** - Automatic propagation of auth, tenant, and request context
 
 ## Installation
 
 ```bash
-go get github.com/mwangaben/graphql-tester
-```
+go get github.com/mwangaben/graphqltester
+````
+
 
 ## Quick Start
 
@@ -36,83 +38,170 @@ package myapp_test
 import (
     "testing"
     
-    tester "github.com/mwangaben/graphql-tester"
+    tester "github.com/mwangaben/graphqltester"
+    "github.com/mwangaben/graphqltester/pkg/adapters/database"
+    "github.com/mwangaben/graphqltester/pkg/factory"
 )
 
 func TestZones(t *testing.T) {
-    // Create tester with default configuration
+    // Create a Laravel-style factory (in-memory, no database needed)
+    f := factory.NewFactory()
+    f.Define("Zone", func(overrides map[string]interface{}) interface{} {
+        zone := map[string]interface{}{
+            "name": "Default Zone",
+            "code": "ZNE001",
+        }
+        for k, v := range overrides {
+            zone[k] = v
+        }
+        return zone
+    })
+    
+    // Create tester with configuration
     test := tester.NewTester(t, &tester.Config{
         Schema: &tester.SchemaConfig{
-            Path: "./schema.graphql",
+            Path:      "./schema.graphql",
             Resolvers: &MyResolver{},
         },
         Database: &tester.DatabaseConfig{
             Adapter: &database.GORMAdapter{},
             DSN:     "root:password@tcp(localhost:3306)/testdb?parseTime=true",
         },
+        Packages: &tester.PackageConfig{
+            Factory: f, // Laravel-style factory
+        },
     })
     
     // Test a query
     test.GivenAdmin().
         GraphQL(`{ zones { name code } }`).
-        AssertStatus(200).
+        AssertOK().
         AssertNoErrors().
-        AssertJSONCount("data.zones", 3)
+        AssertJSONCount("zones", 3)
     
-    // Test a mutation
+    // Test a mutation with database verification
     test.GraphQL(`
         mutation CreateZone($input: CreateZoneInput!) {
-            createZone(input: $input) {
-                slug
-                name
-                code
-                status
-            }
+            createZone(input: $input) { slug name code status }
         }
     `, map[string]interface{}{
         "input": map[string]interface{}{
-            "name": "Industrial Zone",
-            "code": "IND001",
+            "name":   "Industrial Zone",
+            "code":   "IND001",
             "status": "ACTIVE",
         },
     }).
         AssertNoErrors().
-        AssertJSONPath("data.createZone.name", "Industrial Zone").
-        AssertDatabaseHas("zones", map[string]interface{}{
-            "name": "Industrial Zone",
-        })
-    
-    // Test validation errors
-    test.GraphQL(`
-        mutation CreateZone($input: CreateZoneInput!) {
-            createZone(input: $input) { slug }
-        }
-    `, map[string]interface{}{
-        "input": map[string]interface{}{
-            "name": "",
-            "code": "",
-        },
-    }).
-        AssertValidationError("input.name", "The zone name field is required.").
-        AssertValidationError("input.code", "The zone code field is required.")
-    
-    // Test permissions
-    test.GivenUser("user", "zone.view").  // Has view, but not create
-        GraphQL(`
-            mutation CreateZone($input: CreateZoneInput!) {
-                createZone(input: $input) { slug }
-            }
-        `, map[string]interface{}{
-            "input": map[string]interface{}{
-                "name": "Test Zone",
-                "code": "TST001",
-            },
-        }).
-        AssertPermissionError()
+        AssertJSONPath("createZone.name", "Industrial Zone").
+        AssertDatabaseHas("zones", map[string]interface{}{"name": "Industrial Zone"})
 }
 ```
 
-### Authentication Patterns
+## Table of Contents
+
+
+- Installation
+
+- Quick Start
+
+- Configuration
+
+- Authentication
+
+- Assertions
+
+   - HTTP Status
+
+  - GraphQL Errors
+
+  - Data Assertions
+
+  - JSON Path Navigation
+
+  - Validation Assertions
+
+  - Permission Assertions
+
+  - Database Assertions
+
+- Factory
+
+- BDD Testing Style
+
+- Parallel Testing
+
+- Subscription Testing
+
+- Framework Adapters
+
+- Database Adapters
+
+- Middleware
+
+- Package Structure
+
+## Configuration
+
+#### Full Configuration Example
+
+```go
+config := &tester.Config{
+    Endpoint: "/graphql",
+    Debug:    true,
+    
+    // HTTP Framework (default: NetHTTPAdapter)
+    HTTPAdapter: &http.GinAdapter{},
+    
+    // Schema
+    Schema: &tester.SchemaConfig{
+        Path:      "./schema.graphql",
+        Resolvers: &MyResolver{},
+        Options: []graphql.SchemaOpt{
+            graphql.MaxDepth(15),
+            graphql.MaxParallelism(20),
+        },
+    },
+    
+    // Database (set to nil for database-free tests)
+    Database: &tester.DatabaseConfig{
+        Adapter:         &database.GORMAdapter{},
+        DSN:             "root:password@tcp(localhost:3306)/testdb?parseTime=true",
+        AutoMigrate:     true,
+        UseTransactions: true,
+    },
+    
+    // Middleware
+    Middleware: &tester.MiddlewareConfig{
+        AuthEnabled:       true,
+        PermissionEnabled: true,
+        ValidationEnabled: true,
+    },
+    
+    // Packages Integration
+    Packages: &tester.PackageConfig{
+        Factory:    myFactory,           // Laravel-style factory
+        Permission: myPermissionManager,
+        Validation: myValidator,
+    },
+}
+```
+
+#### Database-Free Configuration
+
+For tests that don't need a database:
+
+
+
+```go
+config := tester.DefaultConfig()
+config.Database = nil  // Disable database
+config.Schema = &tester.SchemaConfig{
+    String:    schemaDefinition,  // Inline schema
+    Resolvers: &mockResolver{},
+}
+```
+
+## Authentication
 
 ### Acting as a User
 
@@ -121,7 +210,7 @@ func TestZones(t *testing.T) {
 test.SignInAdmin()
 
 // Or use an existing user
-user := User{ID: "123", Name: "John"}
+user := &User{ID: "123", Name: "John"}
 test.SignInAdmin(user)
 
 // BDD-style
@@ -129,36 +218,39 @@ test.GivenAdmin()
 
 // Sign in with specific role and permissions
 test.SignInUser("editor", "posts.create")
-
-// With an existing user
 test.SignInUser("editor", "posts.edit", existingUser)
 
 // BDD-style
 test.GivenUser("editor", "posts.create")
+
+// Set token directly
+test.WithToken("eyJhbGciOiJIUzI1NiIs...")
+
+// Set user directly
+test.ActingAs(user)
+
+// Clear authentication
+test.ClearAuth()
 ```
 
-#### Token-Based Authentication
+## Assertions
 
-```go
-token := "eyJhbGciOiJIUzI1NiIs..."
-test.WithToken(token)
-```
-
-### Assertions
-
-#### HTTP Status Assertions
+### HTTP Status Assertions
 
 ```go
 test.GraphQL(`...`).
     AssertOK().           // 200
     AssertCreated().      // 201
+    AssertNoContent().    // 204
     AssertUnauthorized(). // 401
     AssertForbidden().    // 403
     AssertNotFound().     // 404
+    AssertUnprocessable().// 422
     AssertServerError()   // 5xx
+    AssertStatus(200)     // Custom status code
 ```
 
-#### GraphQL Error Assertions
+### GraphQL Error Assertions
 
 ```go
 test.GraphQL(`...`).
@@ -175,24 +267,39 @@ test.GraphQL(`...`).
 ```go
 test.GraphQL(`...`).
     AssertJSON(map[string]interface{}{
-        "data": map[string]interface{}{
-            "user": map[string]interface{}{
-                "name": "John Doe",
-            },
-        },
+        "user": map[string]interface{}{"name": "John Doe"},
     }).
     AssertJSONSubset(map[string]interface{}{
-        "data": map[string]interface{}{
-            "user": map[string]interface{}{
-                "name": "John Doe",
-            },
-        },
+        "user": map[string]interface{}{"name": "John Doe"},
     }).
-    AssertJSONPath("data.user.name", "John Doe").
-    AssertJSONPath("data.user.address.city", "New York").
-    AssertJSONCount("data.users", 5).
-    AssertJSONNotEmpty("data.users").
-    AssertJSONEmpty("data.users")
+    AssertJSONPath("user.name", "John Doe").
+    AssertJSONPath("user.address.city", "New York").
+    AssertJSONCount("users", 5).
+    AssertJSONNotEmpty("users").
+    AssertJSONEmpty("users").
+    AssertData().       // Data is not nil
+    AssertDataNil()     // Data is nil
+```
+
+
+### JSON Path Navigation
+
+```go
+response := test.GraphQL(`{ user { name email age active } }`)
+
+// Typed accessors
+name := response.JSONString("user.name")    // "John Doe"
+age := response.JSONInt("user.age")         // 30
+active := response.JSONBool("user.active")  // true
+
+// Generic accessor
+val := response.JSON("user.name")           // interface{}
+
+// Array navigation
+firstUser := response.JSON("users.0.name")  // First user's name
+
+// Map access
+metadata := response.JSONMap("user.metadata")
 ```
 
 ### Validation Assertions
@@ -201,7 +308,7 @@ test.GraphQL(`...`).
 test.GraphQL(`...`).
     AssertValidationError("input.name", "The name field is required.").
     AssertValidationRules(map[string]string{
-        "input.name": "required",
+        "input.name":  "required",
         "input.email": "invalid email",
     }).
     AssertValidationErrors(2).
@@ -217,80 +324,90 @@ test.GraphQL(`...`).
     AssertUnauthenticated().
     AssertForbidden().
     AssertPermissionError().
-    AssertPermissionDenied("zones.delete")
+    AssertPermissionDenied("zones.delete").
+    AssertHasPermission("posts.create").
+    AssertHasRole("admin").
+    AssertLacksPermission("zones.delete").
+    AssertLacksRole("admin")
 ```
-
 
 ### Database Assertions
 
 ```go
 test.GraphQL(`...`).
-    AssertDatabaseHas("zones", map[string]interface{}{
-        "name": "Test Zone",
-    }).
-    AssertDatabaseMissing("zones", map[string]interface{}{
-        "id": 999,
-    }).
-    AssertSoftDeleted("zones", map[string]interface{}{
-        "id": zoneID,
-    }).
-    AssertNotSoftDeleted("zones", map[string]interface{}{
-        "id": zoneID,
-    }).
+    AssertDatabaseHas("zones", map[string]interface{}{"name": "Test Zone"}).
+    AssertDatabaseMissing("zones", map[string]interface{}{"id": 999}).
+    AssertSoftDeleted("zones", map[string]interface{}{"id": zoneID}).
+    AssertNotSoftDeleted("zones", map[string]interface{}{"id": zoneID}).
     AssertDatabaseCount("zones", 5).
-    AssertDatabaseCountWhere("zones", map[string]interface{}{
-        "status": "ACTIVE",
-    }, 3).
-    AssertDatabaseValue("zones",
-        map[string]interface{}{"id": zoneID},
-        "name",
-        "Updated Zone",
-    )
+    AssertDatabaseCountWhere("zones", map[string]interface{}{"status": "ACTIVE"}, 3).
+    AssertDatabaseValue("zones", map[string]interface{}{"id": zoneID}, "name", "Updated")
 ```
 
-### Subscription Testing
+### Factory
+The package includes a Laravel-style factory that works both in-memory and with a database.
 
+
+#### In-Memory Factory (No Database Required)
 ```go
-// Subscribe to events
-client, sub := test.Subscribe(`
-    subscription ZoneCreated {
-        zoneCreated {
-            slug
-            name
-            code
-        }
-    }
-`, nil)
-defer client.Disconnect()
+f := factory.NewFactory()
 
-// Trigger the subscription
-test.GraphQL(`
-    mutation CreateZone($input: CreateZoneInput!) {
-        createZone(input: $input) {
-            slug
-        }
+// Define factories
+f.Define("User", func(overrides map[string]interface{}) interface{} {
+    user := map[string]interface{}{
+        "id":    "default-id",
+        "name":  "Default User",
+        "email": "default@example.com",
     }
-`, map[string]interface{}{
-    "input": map[string]interface{}{
-        "name": "Subscription Zone",
-        "code": "SUB001",
-    },
+    for k, v := range overrides {
+        user[k] = v
+    }
+    return user
 })
 
-// Assert the subscription received the event
-sub.ExpectMessage(map[string]interface{}{
-    "zoneCreated": map[string]interface{}{
-        "name": "Subscription Zone",
-        "code": "SUB001",
-    },
-}, 5*time.Second)
-
-// Or use assertion helpers
-test.AssertSubscription(sub).
-    AssertDataPath("zoneCreated.name", "Subscription Zone").
-    AssertDataPath("zoneCreated.code", "SUB001").
-    AssertNoErrors()
+// Use factories
+user := f.Of("User").Create()
+adminUser := f.Of("User").Overrides(map[string]interface{}{
+    "name": "Admin User",
+}).Create()
+users := f.Of("User").Times(5).Create()
 ```
+
+
+#### Database-Backed Factory
+
+```go
+f := factory.NewFactory()
+
+f.Define("User", func(overrides map[string]interface{}) interface{} {
+    user := User{Name: "Default", Email: "default@example.com"}
+    if v, ok := overrides["name"]; ok { user.Name = v.(string) }
+    if v, ok := overrides["email"]; ok { user.Email = v.(string) }
+    db.Create(&user)  // Persist to database
+    return &user
+})
+
+// Same API, but now saves to database
+user := f.Of("User").Create().(*User)
+fmt.Println(user.ID)  // Auto-generated by database
+```
+
+### Factory API Reference
+
+| Method                  | Description                                |
+|-------------------------|--------------------------------------------|
+| Factory(name)           | Get a factory builder for the model        |
+| Create()                | Create instance(s) with default attributes |
+| Create(overrides)       | Create with attribute overrides            |
+| Make()                  | Alias for Create                           |
+| Times(n).Create()       | Create multiple instances                  |
+| Overrides(map)          | Set attribute overrides                    |
+| State(name)             | Apply a named state                        |
+| Raw(attrs)              | Create with only provided attributes       |
+| CreateMany(n)           | Create multiple instances                  |
+| Define(name, fn)        | Register a factory definition              |
+| State(model, state, fn) | Register a state transformation            |
+
 
 ### BDD Testing Style
 
@@ -303,41 +420,27 @@ test.Describe("Zone CRUD Operations", func(t *tester.Tester) {
     
     t.It("can list zones with pagination", func(t *tester.Tester) {
         t.Factory("Zone").CreateMany(5)
-        
         t.GraphQL(`{ zones(first: 3, page: 1) { data { name } } }`).
             AssertNoErrors().
-            AssertJSONCount("data.zones.data", 3)
+            AssertJSONCount("zones.data", 3)
     })
     
     t.It("can create a new zone", func(t *tester.Tester) {
-        t.GraphQL(`
-            mutation CreateZone($input: CreateZoneInput!) {
-                createZone(input: $input) { slug name }
-            }
-        `, map[string]interface{}{
-            "input": map[string]interface{}{
-                "name": "New Zone",
-                "code": "NEW001",
-            },
-        }).
+        t.GraphQL(`mutation { createZone(input: {name: "New", code: "NEW001"}) { slug } }`).
             AssertNoErrors().
-            AssertJSONPath("data.createZone.name", "New Zone")
+            AssertJSONPath("createZone.name", "New")
     })
     
     t.It("validates required fields", func(t *tester.Tester) {
-        t.GraphQL(`
-            mutation CreateZone($input: CreateZoneInput!) {
-                createZone(input: $input) { slug }
-            }
-        `, map[string]interface{}{
-            "input": map[string]interface{}{
-                "name": "",
-                "code": "",
-            },
-        }).
-            AssertValidationError("input.name", "required").
-            AssertValidationError("input.code", "required")
+        t.GraphQL(`mutation { createZone(input: {name: "", code: ""}) { slug } }`).
+            AssertValidationError("input.name", "required")
     })
+})
+
+// Sub-tests with isolation
+test.Run("User Tests", func(t *tester.Tester) {
+    t.GivenAdmin()
+    t.GraphQL(`...`).AssertNoErrors()
 })
 ```
 
@@ -356,112 +459,158 @@ test.RunParallel([]func(*tester.IsolatedTester){
 }, &tester.ConcurrentConfig{
     MaxParallel: 4,
     Timeout:     30 * time.Second,
+    FailFast:    true,  // Stop all tests on first failure
 })
 ```
 
-
-### Configuration
-
-#### Full Configuration Example
+### Subscription Testing
 
 ```go
-config := &tester.Config{
-    Endpoint: "/graphql",
-    Debug:    true,
-    
-    // HTTP Framework
-    HTTPAdapter: &http.GinAdapter{},
-    
-    // Schema
-    Schema: &tester.SchemaConfig{
-        Path:      "./schema.graphql",
-        Resolvers: &MyResolver{},
-        Options: []graphql.SchemaOpt{
-            graphql.MaxDepth(15),
-            graphql.MaxParallelism(20),
-        },
-    },
-    
-    // Database
-    Database: &tester.DatabaseConfig{
-        Adapter:         &database.GORMAdapter{},
-        DSN:             "root:password@tcp(localhost:3306)/testdb?parseTime=true",
-        AutoMigrate:     true,
-        UseTransactions: true,
-    },
-    
-    // Middleware
-    Middleware: &tester.MiddlewareConfig{
-        AuthEnabled:       true,
-        PermissionEnabled: true,
-        ValidationEnabled: true,
-    },
-    
-    // Packages Integration
-    Packages: &tester.PackageConfig{
-        Factory:    myFactory,
-        Permission: myPermissionManager,
-        Validation: myValidator,
-    },
-}
+client, sub := test.Subscribe(`
+    subscription ZoneCreated {
+        zoneCreated { slug name code }
+    }
+`, nil)
+defer client.Disconnect()
+
+// Trigger the subscription
+test.GraphQL(`mutation { createZone(input: {name: "Test", code: "TST001"}) { slug } }`)
+
+// Assert the subscription received the event
+sub.ExpectMessage(map[string]interface{}{
+    "zoneCreated": map[string]interface{}{"name": "Test", "code": "TST001"},
+}, 5*time.Second)
+
+// Use assertion helpers
+test.AssertSubscription(sub).
+    AssertDataPath("zoneCreated.name", "Test").
+    AssertNoErrors()
 ```
 
-## Framework Adapters
-
-### Standard net/http
+### Framework Adapters
 
 ```go
+// Standard net/http
 HTTPAdapter: &http.NetHTTPAdapter{}
-```
 
-### Gin
-
-```go
+// Gin
 HTTPAdapter: http.NewGinAdapter()
-```
 
-### Echo
-```go
+// Echo
 HTTPAdapter: http.NewEchoAdapter(false)
-```
 
-### Chi
-```go
+// Chi
 HTTPAdapter: http.NewChiAdapter()
 ```
 
-### Database Adapters
-
-
-#### GORM
+### Database Adapter Configuration
 
 ```go
+// GORM
 adapter := database.NewGORMAdapter(&database.GORMConfig{
     PrepareStmt: true,
 })
 adapter.AddModel(&User{}).AddModel(&Zone{})
-```
 
-#### SQLx
-```go
+// SQLx
 adapter := database.NewSQLxAdapter("mysql")
 adapter.AddTable("users").AddTable("zones")
+
+// Raw MySQL
+adapter := database.NewMySQLAdapter()
+adapter.AddTable("users", `CREATE TABLE users (id INT PRIMARY KEY AUTO_INCREMENT, ...)`)
 ```
 
-### Raw MySQL
+
+### Middleware
+
+The tester includes a configurable middleware chain:
 
 ```go
-adapter := database.NewMySQLAdapter()
-adapter.AddTable("users", `CREATE TABLE users (...)`)
+// Enable built-in middleware
+config.Middleware.AuthEnabled = true
+config.Middleware.PermissionEnabled = true
+config.Middleware.ValidationEnabled = true
+config.Middleware.TenancyEnabled = true
+
+// Add custom middleware
+config.WithCustomMiddleware(myCustomMiddleware)
 ```
 
-### Integration with Existing Packages
+### Middleware Execution Order
 
-This package is designed to work seamlessly with your existing packages:
+- Custom middleware (user-provided)
+1. Custom middleware (user-provided)
+2. Request ID middleware
+3. Context propagation middleware
+4. Multi-tenancy middleware (if enabled)
+5. Authentication middleware (if enabled)
+6. Permission middleware (if enabled)
+7. Validation middleware (if enabled)
+8. Response capture middleware
 
-- [mwangaben/factory](https://github.com/mwangaben/factory) - Model factories for test data
-- [mwangaben/permission](https://github.com/mwangaben/permission) - Role and permission management
-- [mwangaben/validation](https://github.com/mwangaben/validation) - Input validation
+
+### Package Structure
+
+```text
+graphql-tester/
+├── types/                         # Shared types and interfaces
+│   ├── graphql.go                 # GraphQL request/response types
+│   ├── response.go                # Response interface
+│   ├── tester.go                  # Tester interface
+│   ├── database.go                # Database adapter interface
+│   └── context.go                 # Context key constants
+├── assertions/                    # Assertion methods
+│   ├── response.go                # HTTP/GraphQL response assertions
+│   ├── validation.go              # Validation error assertions
+│   ├── permission.go              # Permission/authorization assertions
+│   └── database.go                # Database state assertions
+├── pkg/
+│   ├── adapters/
+│   │   ├── http/                  # HTTP framework adapters
+│   │   │   ├── adapter.go         # FrameworkAdapter interface
+│   │   │   ├── nethttp.go         # Standard library adapter
+│   │   │   ├── gin.go             # Gin adapter
+│   │   │   ├── echo.go            # Echo adapter
+│   │   │   └── chi.go             # Chi router adapter
+│   │   └── database/              # Database adapters
+│   │       ├── adapter.go         # DatabaseAdapter interface
+│   │       ├── gorm.go            # GORM adapter
+│   │       ├── sqlx.go            # SQLx adapter
+│   │       └── mysql.go           # Raw MySQL adapter
+│   ├── middleware/                 # Middleware implementations
+│   │   ├── chain.go               # Middleware chain
+│   │   ├── context.go             # Context propagation
+│   │   ├── auth.go                # Authentication
+│   │   ├── permission.go          # Permission checking
+│   │   ├── tenant.go              # Multi-tenancy
+│   │   └── validation.go          # Input validation
+│   └── factory/                   # Laravel-style factory
+│       └── factory.go             # Factory implementation
+├── tester.go                      # Main tester struct
+├── config.go                      # Configuration management
+├── client.go                      # GraphQL HTTP client
+├── response.go                    # Response handling
+├── auth.go                        # Authentication helpers
+├── factory.go                     # Factory integration
+├── database.go                    # Database management
+├── schema.go                      # Schema management
+├── subscription.go                # Subscription testing
+├── concurrent.go                  # Parallel testing
+├── go.mod
+├── go.sum
+├── README.md
+└── LICENSE
+|-- tests---|
+            |--- adapter_test.go
+            |--- auth_test.go
+            |--- chain_test.go
+            |--- concurrent_test.go
+            |--- config_test.go
+            |--- factory_test.go
+            |--- response_test.go 
+```
+
 
 ```go
 config := &tester.Config{
@@ -473,57 +622,64 @@ config := &tester.Config{
 }
 ```
 
-### License
-#### MIT License.
+### Tester API Reference
 
-### Package structure 
+| Method                                   | Description                       |
+|------------------------------------------|-----------------------------------|
+| NewTester(t, config)                     | Create a new tester instance      |
+| GraphQL(query, vars...)                  | Execute a GraphQL query/mutation  |
+| Query(query, vars...)                    | Semantic sugar for queries        |
+| Mutation(query, vars...)                 | Semantic sugar for mutations      |
+| GraphQLFile(path, vars...)               | Execute query from file           |
+| GraphQLWithHeaders(query, vars, headers) | Execute with custom headers       |
+| GivenAdmin(user...)                      | Authenticate as admin             |
+| GivenUser(role, perm, user...)           | Authenticate with role/permission |
+| SignInAdmin(user...)                     | Sign in as admin                  |
+| SignInUser(role, perm, user...)          | Sign in with role/permission      |
+| ActingAs(user)                           | Set authenticated user            |
+| WithToken(token)                         | Set bearer token                  |
+| ClearAuth()                              | Clear authentication state        |
+| CurrentUser()                            | Get current user                  |
+| CurrentToken()                           | Get current token                 |
+| HasPermission(perm)                      | Check permission                  |
+| HasRole(role)                            | Check role                        |
+| RefreshDatabase()                        | Reset database state              |
+| Migrate()                                | Run migrations                    |
+| MigrateFresh()                           | Drop and re-run migrations        |
+| Seed(fn)                                 | Run seeder function               |
+| Factory(name)                            | Get factory builder               |
+| SetTenant(id)                            | Set current tenant                |
+| WithTenantScope(id, fn)                  | Scope to tenant                   |
+| Describe(name, fn)                       | BDD test group                    |
+| It(name, fn)                             | BDD test case                     |
+| Run(name, fn)                            | Sub-test with isolation           |
+| BeforeEach(fn)                           | Setup before each test            |
+| RunParallel(tests, config)               | Run tests concurrently            |
+| Subscribe(query, vars)                   | Create subscription               |
+| SetShared(key, value)                    | Set shared state                  |
+| GetShared(key)                           | Get shared state                  |
+| UseMiddleware(chain)                     | Set middleware chain              |
+| WithoutMiddleware(names...)              | Remove middleware                 |
+| Cleanup()                                | Cleanup resources                 |
+| Debug()                                  | Get debug mode status             |
+
+
+### License
+
 
 ```text
 
-This completes the major components of the GraphQL Tester package. The package now includes:
-
-1. ✅ **Configuration Management** (`config.go`)
-2. ✅ **Main Tester** (`tester.go`)
-3. ✅ **HTTP Client** (`client.go`)
-4. ✅ **Response Handling** (`response.go`)
-5. ✅ **Authentication** (`auth.go`)
-6. ✅ **Factory Integration** (`factory.go`)
-7. ✅ **Database Management** (`database.go`)
-8. ✅ **Validation Assertions** (`assertions/validation.go`)
-9. ✅ **Permission Assertions** (`assertions/permission.go`)
-10. ✅ **Database Assertions** (`assertions/database.go`)
-11. ✅ **Middleware Chain** (`pkg/middleware/chain.go`)
-12. ✅ **Context Propagation** (`pkg/middleware/context.go`)
-13. ✅ **HTTP Adapters** (`pkg/adapters/http/`)
-14. ✅ **Database Adapters** (`pkg/adapters/database/`)
-15. ✅ **Schema Management** (`schema.go`)
-16. ✅ **Subscription Testing** (`subscription.go`)
-17. ✅ **Concurrent Testing** (`concurrent.go`)
-18. ✅ **Comprehensive Tests** (all `*_test.go` files)
-19. ✅ **Complete README Documentation**
-
-The package is now production-ready with:
-- Comprehensive test coverage
-- Detailed GoDoc comments on every function
-- Fluent API matching Laravel Lighthouse patterns
-- Multiple framework and database adapters
-- Full subscription testing support
-- Concurrent test execution
-- BDD-style test organization
+The README now includes:
+- ✅ Updated factory section with both in-memory and database examples
+- ✅ Database-free configuration option
+- ✅ Complete factory API reference
+- ✅ JSON path navigation examples
+- ✅ Parallel testing with FailFast
+- ✅ Package structure diagram
+- ✅ Full tester API reference table
+- ✅ Middleware execution order
+- ✅ BDD testing with Describe/It/Run
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
