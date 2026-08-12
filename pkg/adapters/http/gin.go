@@ -11,33 +11,17 @@ import (
  * GinAdapter provides GraphQL testing support for the Gin web framework.
  *
  * Gin is a popular high-performance HTTP framework for Go. This adapter
- * integrates Gin's context system with the GraphQL tester, allowing tests
- * to leverage Gin-specific features like:
- * - Gin context methods (c.JSON, c.Query, c.Param, etc.)
- * - Gin middleware
- * - Gin request binding and validation
+ * integrates Gin's context system with the GraphQL tester.
  *
  * Usage:
  *   config := &Config{
- *       HTTPAdapter: &http.GinAdapter{},
+ *       HTTPAdapter: http.NewGinAdapter(),
  *   }
- *
- * When to use:
- * - When your GraphQL server is built with Gin
- * - When your resolvers depend on gin.Context
- * - When you need to test Gin-specific middleware
  */
-
-// GinAdapter implements FrameworkAdapter for the Gin framework.
 type GinAdapter struct {
-	// engine is the Gin engine instance used for routing.
 	engine *gin.Engine
-
-	// server is the test server instance.
 	server *httptest.Server
-
-	// mode stores the Gin mode (test, debug, release).
-	mode string
+	mode   string
 }
 
 /**
@@ -48,15 +32,9 @@ type GinAdapter struct {
  *
  * Returns:
  *   *GinAdapter configured for testing
- *
- * Example:
- *   adapter := NewGinAdapter()
- *   config.HTTPAdapter = adapter
  */
 func NewGinAdapter() *GinAdapter {
-	// Set Gin to test mode for better test output
 	gin.SetMode(gin.TestMode)
-
 	return &GinAdapter{
 		mode: gin.TestMode,
 	}
@@ -65,22 +43,11 @@ func NewGinAdapter() *GinAdapter {
 /**
  * Setup creates a test server with Gin as the HTTP framework.
  *
- * This method:
- * 1. Creates a new Gin engine in test mode
- * 2. Configures the engine to route all requests to /graphql
- * 3. Wraps the GraphQL handler with Gin's context
- * 4. Starts an httptest server
- *
  * Parameters:
  *   handler - The GraphQL http.Handler to serve
  *
  * Returns:
  *   *httptest.Server ready to accept requests
- *
- * Example:
- *   adapter := NewGinAdapter()
- *   server := adapter.Setup(myGraphQLHandler)
- *   defer server.Close()
  */
 func (a *GinAdapter) Setup(handler http.Handler) *httptest.Server {
 	// Create a new Gin engine
@@ -89,15 +56,9 @@ func (a *GinAdapter) Setup(handler http.Handler) *httptest.Server {
 	// Add recovery middleware for better error messages
 	a.engine.Use(gin.Recovery())
 
-	// Route all requests to the GraphQL handler
-	// Use Any to handle both GET and POST requests
+	// Register the GraphQL endpoint - use Any() which handles GET, POST, etc.
+	// Do NOT register POST separately as Any() already covers it
 	a.engine.Any("/graphql", func(c *gin.Context) {
-		// Wrap the standard handler to work with Gin context
-		gin.WrapH(handler)(c)
-	})
-
-	// Also handle the configured endpoint path
-	a.engine.POST("/graphql", func(c *gin.Context) {
 		gin.WrapH(handler)(c)
 	})
 
@@ -110,34 +71,21 @@ func (a *GinAdapter) Setup(handler http.Handler) *httptest.Server {
 /**
  * CreateContext creates a Gin-specific context from an HTTP request.
  *
- * This allows resolvers to access gin.Context and use Gin-specific
- * methods like c.Query(), c.Param(), c.GetString(), etc.
- *
  * Parameters:
- *   req - The HTTP request (unused, context is created fresh)
+ *   req - The HTTP request
  *
  * Returns:
  *   interface{} containing a *gin.Context
- *
- * Note:
- *   The returned gin.Context is a test context and may not have all
- *   production features. For full Gin integration, use Gin-specific
- *   test patterns.
  */
 func (a *GinAdapter) CreateContext(req *http.Request) interface{} {
-	// Create a test Gin context
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
-
 	return c
 }
 
 /**
  * AddMiddleware applies Gin-specific middleware to the handler.
- *
- * Gin middleware uses gin.HandlerFunc instead of standard http middleware.
- * This method converts Gin middleware to work with http.Handler.
  *
  * Parameters:
  *   handler     - The base http.Handler
@@ -145,34 +93,21 @@ func (a *GinAdapter) CreateContext(req *http.Request) interface{} {
  *
  * Returns:
  *   http.Handler with Gin middleware applied
- *
- * Example:
- *   handler := adapter.AddMiddleware(
- *       myHandler,
- *       gin.Logger(),
- *       gin.Recovery(),
- *       customGinMiddleware,
- *   )
  */
 func (a *GinAdapter) AddMiddleware(handler http.Handler, middlewares ...interface{}) http.Handler {
 	if a.engine == nil {
 		a.engine = gin.New()
 	}
 
-	// Add middlewares to the Gin engine
 	for _, mw := range middlewares {
 		if ginMW, ok := mw.(gin.HandlerFunc); ok {
 			a.engine.Use(ginMW)
 		}
 	}
 
-	// Re-setup the handler with the engine that now has middleware
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Create a fresh Gin context for this request
 		ginCtx := gin.CreateTestContextOnly(w, a.engine)
 		ginCtx.Request = r
-
-		// Execute Gin middleware chain, then the handler
 		a.engine.HandleContext(ginCtx)
 	})
 
@@ -214,9 +149,6 @@ func (a *GinAdapter) URL() string {
 /**
  * Engine returns the Gin engine for direct configuration.
  *
- * Use this to add custom routes, middleware, or configuration
- * to the Gin engine before starting the server.
- *
  * Returns:
  *   *gin.Engine instance
  */
@@ -226,11 +158,6 @@ func (a *GinAdapter) Engine() *gin.Engine {
 
 /**
  * SetMode changes the Gin mode.
- *
- * Available modes:
- * - gin.DebugMode: Verbose logging
- * - gin.ReleaseMode: Production mode
- * - gin.TestMode: Test-optimized mode (default)
  *
  * Parameters:
  *   mode - The Gin mode to set
