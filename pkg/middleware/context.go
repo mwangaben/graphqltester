@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"github.com/mwangaben/graphqltester/types"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -34,6 +37,12 @@ type contextKey string
 func ContextPropagationMiddleware(tester interface{}) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip WebSocket requests
+			if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			ctx := r.Context()
 
 			// Add request ID if not present
@@ -82,6 +91,12 @@ func ContextPropagationMiddleware(tester interface{}) Middleware {
 func ResponseContextMiddleware(tester interface{}) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip wrapping for WebSocket requests (they need http.Hijacker)
+			if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			rw := &responseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
@@ -99,6 +114,12 @@ func ResponseContextMiddleware(tester interface{}) Middleware {
 func RequestIDMiddleware() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip WebSocket requests
+			if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			requestID := r.Header.Get("X-Request-ID")
 			if requestID == "" {
 				requestID = generateRequestID()
@@ -137,6 +158,38 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 
 func (rw *responseWriter) StatusCode() int {
 	return rw.statusCode
+}
+
+// Hijack implements http.Hijacker interface for WebSocket support
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	// Check if the underlying writer supports Hijack
+	if hijacker, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not support http.Hijacker")
+}
+
+// Flush implements http.Flusher interface (needed for WebSocket)
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// CloseNotify implements http.CloseNotifier interface (deprecated but needed)
+func (rw *responseWriter) CloseNotify() <-chan bool {
+	if notifier, ok := rw.ResponseWriter.(http.CloseNotifier); ok {
+		return notifier.CloseNotify()
+	}
+	return nil
+}
+
+// Push implements http.Pusher interface (for HTTP/2)
+func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
 
 // generateRequestID generates a unique request identifier.

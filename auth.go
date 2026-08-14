@@ -32,67 +32,67 @@ import (
 // Primary Authentication Methods
 // ============================================================================
 
-//ActingAs
 /**
  * ActingAs sets the currently authenticated user for subsequent requests.
  *
- * This is the primary method for authenticating a user in tests. It sets
- * the user in the tester's state and configures the middleware chain to
- * inject this user into the request context.
+ * This follows the Laravel Passport pattern:
+ *   Passport::actingAs($user, [], 'api')
  *
- * After calling ActingAs, all subsequent GraphQL requests will be
- * authenticated as the specified user until changed.
+ * It bypasses token authentication by injecting the user directly
+ * into the request context, eliminating the need for login.
  *
  * Parameters:
  *   user - The user model instance to authenticate as
  *
  * Returns:
  *   *Tester for fluent method chaining
- *
- * Example:
- *   user := User{ID: "123", Name: "John Doe"}
- *   tester.ActingAs(user)
- *
- *   // Now all requests are authenticated as this user
- *   tester.GraphQL(`{ me { name } }`).AssertJSONPath("data.me.name", "John Doe")
- *
- * Integration:
- *   Works with the auth middleware to set context values:
- *   - UserIDKey: The user's ID
- *   - UserKey: The full user object
- *   - AuthStatusKey: Set to AuthStatusAuthenticated
  */
 func (tester *Tester) ActingAs(user interface{}) *Tester {
+	fmt.Printf("The Acting has been fired %v", user)
 	tester.mu.Lock()
 	defer tester.mu.Unlock()
 
 	tester.currentUser = user
 
-	// Update the middleware chain to include the custom auth middleware
-	// that injects this user into the request context
+	// Create a custom middleware that injects the user into context
 	customAuthMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Create a new context with the authenticated user
-			ctx := context.WithValue(r.Context(), types.UserKey, user)
-			ctx = context.WithValue(ctx, types.AuthStatusKey, types.AuthStatusAuthenticated)
+			ctx := r.Context()
 
-			// Try to extract user ID using reflection or interface
+			fmt.Printf("One the context %v", ctx)
+			// Set user in context using multiple key types
+			// This ensures compatibility with your app's context package
+			ctx = context.WithValue(ctx, types.UserKey, user)
+			ctx = context.WithValue(ctx, "user", user) // String key for compatibility
+
+			// Also set user ID
 			if userWithID, ok := user.(interface{ GetID() string }); ok {
 				ctx = context.WithValue(ctx, types.UserIDKey, userWithID.GetID())
-			} else if userWithID, ok := user.(interface{ ID() string }); ok {
-				ctx = context.WithValue(ctx, types.UserIDKey, userWithID.ID())
+				ctx = context.WithValue(ctx, "user_id", userWithID.GetID())
+				fmt.Printf("The user with context %v", userWithID)
 			}
+
+			fmt.Printf("the context %v", ctx)
+
+			// Set auth status as authenticated
+			ctx = context.WithValue(ctx, types.AuthStatusKey, types.AuthStatusAuthenticated)
+			ctx = context.WithValue(ctx, "auth_status", "authenticated")
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 
-	// Replace existing auth middleware or add if not exists
+	fmt.Sprintf("the custom AuthMiddleware is %v", customAuthMiddleware)
+	// Replace existing auth middleware with our custom one
 	if tester.middlewareChain != nil {
+		tester.middlewareChain.Replace("auth", customAuthMiddleware)
+	} else {
+		// If no middleware chain, create one with just auth
+		tester.setupMiddleware()
 		tester.middlewareChain.Replace("auth", customAuthMiddleware)
 	}
 
-	if tester.config.debugEnabled {
+	if tester.config.Debug() {
 		tester.t.Logf("🔑 Acting as user: %v", tester.getUserIdentifier(user))
 	}
 
@@ -217,69 +217,33 @@ func (tester *Tester) SignInUser(roleName string, permissionName string, user ..
 	return tester
 }
 
-//SignInAdmin
 /**
- * SignInAdmin authenticates a test as an administrator user.
+ * SignInAdmin authenticates as an admin user with proper role and permissions.
  *
- * This is a convenience method that creates an admin role, assigns it to
- * a user (created or provided), and authenticates the user. Admin users
- * typically have full access to all operations.
- *
- * Parameters:
- *   user - Optional existing user (if nil, creates one via factory)
- *
- * Returns:
- *   *Tester for fluent method chaining
- *
- * Example:
- *   // Create and authenticate an admin user
- *   tester.SignInAdmin()
- *
- *   // Use an existing user as admin
- *   tester.SignInAdmin(existingAdminUser)
- *
- * Equivalent to Lighthouse:
+ * This follows the Laravel Lighthouse pattern:
  *   $this->signInAdmin($user)
  */
 func (tester *Tester) SignInAdmin(user ...interface{}) *Tester {
 	var u interface{}
 
-	// Use provided user or create one via factory
 	if len(user) > 0 && user[0] != nil {
 		u = user[0]
 	} else {
-		// Check if factory is configured
-		if tester.config == nil ||
-			tester.config.Packages == nil ||
-			tester.config.Packages.Factory == nil {
-			// No factory - create a simple user map
-			u = map[string]interface{}{
-				"id":   "admin-1",
-				"name": "Admin User",
-			}
-			if tester.config.Debug() {
-				tester.t.Logf("⚠️  Factory not configured, using default admin user")
-			}
-		} else {
-			u = tester.Factory("User").Create()
-			if tester.config.Debug() {
-				tester.t.Logf("👤 Created new admin user via factory")
-			}
+		if tester.config.Packages == nil || tester.config.Packages.Factory == nil {
+			tester.t.Fatal("❌ Factory package is required for SignInAdmin")
 		}
+		u = tester.Factory("User").Create()
 	}
 
 	// Create admin role
 	adminRole := tester.getOrCreateRole("admin")
 
-	// Assign admin role to user
+	// Assign role to user
 	tester.AssignRole(u, adminRole)
 
 	// Authenticate as this admin user
+	// ActingAs now injects the user directly into context
 	tester.ActingAs(u)
-
-	if tester.config.Debug() {
-		tester.t.Logf("✅ Signed in as admin user")
-	}
 
 	return tester
 }

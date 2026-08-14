@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -65,6 +66,9 @@ type Tester struct {
 	// Test State
 	models map[string]interface{}
 	state  map[string]interface{}
+
+	beforeEach func() // ← Add this field
+
 }
 
 // ============================================================================
@@ -99,24 +103,6 @@ func (tester *Tester) CurrentToken() string {
 	defer tester.mu.RUnlock()
 	return tester.currentToken
 }
-
-//// HasPermission checks if the current user has a specific permission.
-//func (tester *Tester) HasPermission(permission string) bool {
-//	if tester.currentUser == nil {
-//		return false
-//	}
-//	// Integration with permission package would go here
-//	return false
-//}
-
-// HasRole checks if the current user has a specific role.
-//func (tester *Tester) HasRole(role string) bool {
-//	if tester.currentUser == nil {
-//		return false
-//	}
-//	// Integration with permission package would go here
-//	return false
-//}
 
 // Logf logs a formatted message for debugging.
 func (tester *Tester) Logf(format string, args ...interface{}) {
@@ -410,9 +396,40 @@ func (tester *Tester) setupMiddleware() {
  * createGraphQLHandler creates the HTTP handler for GraphQL requests.
  */
 func (tester *Tester) createGraphQLHandler() http.Handler {
-	// Create a GraphQL handler using graph-gophers/graphql-go
 	schema := tester.schema.GetSchema()
-	return &relay.Handler{Schema: schema}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tester.t.Logf("🌐 Request received: %s %s, Upgrade: %s", r.Method, r.URL.Path, r.Header.Get("Upgrade"))
+
+		// Check if it's a WebSocket upgrade
+		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+			tester.t.Logf("🔌 WebSocket upgrade detected, routing to WS handler")
+			createWSHandler(schema).ServeHTTP(w, r)
+			return
+		}
+
+		// Regular HTTP GraphQL request
+		tester.t.Logf("📡 Regular HTTP request, routing to relay handler")
+		handler := &relay.Handler{Schema: schema}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+/**
+ * combinedHandler routes requests to HTTP or WebSocket handler.
+ */
+type combinedHandler struct {
+	httpHandler http.Handler
+	wsHandler   http.Handler
+}
+
+func (h *combinedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Check if it's a WebSocket upgrade
+	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+		h.wsHandler.ServeHTTP(w, r)
+		return
+	}
+	h.httpHandler.ServeHTTP(w, r)
 }
 
 // ============================================================================
@@ -446,32 +463,6 @@ func (tester *Tester) GraphQLFile(path string, vars ...map[string]interface{}) *
 // GraphQLWithHeaders sends a GraphQL request with custom HTTP headers.
 func (tester *Tester) GraphQLWithHeaders(query string, variables map[string]interface{}, headers map[string]string) *Response {
 	return tester.client.GraphQLWithHeaders(query, variables, headers)
-}
-
-// ============================================================================
-// Test Organization (BDD Style)
-// ============================================================================
-
-// Describe creates a test group for BDD-style testing.
-func (tester *Tester) Describe(description string, fn func(*Tester)) {
-	tester.t.Helper()
-	tester.t.Logf("\n📋 %s", description)
-	fn(tester)
-}
-
-// It creates a single test case for BDD-style testing.
-func (tester *Tester) It(description string, fn func(*Tester)) {
-	tester.t.Helper()
-	tester.t.Run(description, func(t *testing.T) {
-		sub := tester.clone()
-		sub.t = t
-		fn(sub)
-	})
-}
-
-// BeforeEach sets up state before each test.
-func (tester *Tester) BeforeEach(fn func()) {
-	fn()
 }
 
 // ============================================================================
@@ -539,34 +530,6 @@ func (tester *Tester) MigrateFresh() *Tester {
 	return tester
 }
 
-//// Seed runs a seeder function to populate the database.
-//func (tester *Tester) Seed(seeder func()) *Tester {
-//	if tester.config.Debug() {
-//		tester.t.Logf("🌱 Running seeder...")
-//	}
-//	seeder()
-//	if tester.config.Debug() {
-//		tester.t.Logf("✅ Seeder completed")
-//	}
-//	return tester
-//}
-
-// ============================================================================
-// Factory Operations
-// ============================================================================
-
-// Factory returns a factory builder for creating test data.
-//func (tester *Tester) Factory(name string) *FactoryBuilder {
-//	if tester.config.Packages == nil || tester.config.Packages.Factory == nil {
-//		tester.t.Fatal("❌ Factory package is not configured. Set it in PackageConfig.")
-//	}
-//	return &FactoryBuilder{
-//		tester: tester,
-//		name:   name,
-//		count:  1,
-//	}
-//}
-
 // ============================================================================
 // Multi-Tenancy Operations
 // ============================================================================
@@ -629,30 +592,6 @@ func (tester *Tester) WithoutMiddleware(names ...string) *Tester {
 }
 
 // ============================================================================
-// State Management
-// ============================================================================
-
-// SetShared sets a value in the shared state (visible to sub-tests).
-//func (tester *Tester) SetShared(key string, value interface{}) {
-//	tester.mu.Lock()
-//	defer tester.mu.Unlock()
-//	if tester.state == nil {
-//		tester.state = make(map[string]interface{})
-//	}
-//	tester.state[key] = value
-//}
-
-// GetShared retrieves a value from the shared state.
-//func (tester *Tester) GetShared(key string) interface{} {
-//	tester.mu.RLock()
-//	defer tester.mu.RUnlock()
-//	if tester.state == nil {
-//		return nil
-//	}
-//	return tester.state[key]
-//}
-
-// ============================================================================
 // Internal Helpers
 // ============================================================================
 
@@ -680,6 +619,8 @@ func (tester *Tester) clone() *Tester {
 		models:          make(map[string]interface{}),
 		state:           make(map[string]interface{}),
 	}
+
+	clone.beforeEach = tester.beforeEach
 
 	for k, v := range tester.models {
 		clone.models[k] = v
@@ -747,11 +688,12 @@ func (tester *Tester) Run(name string, fn func(*Tester)) {
  *       })
  *   })
  */
-//func (tester *Tester) Describe(description string, fn func(*Tester)) {
-//	tester.t.Helper()
-//	tester.t.Logf("\n📋 %s", description)
-//	fn(tester)
-//}
+
+func (tester *Tester) Describe(description string, fn func(*Tester)) {
+	tester.t.Helper()
+	tester.t.Logf("\n📋 %s", description)
+	fn(tester)
+}
 
 /**
  * It creates a single test case for BDD-style testing.
@@ -768,14 +710,24 @@ func (tester *Tester) Run(name string, fn func(*Tester)) {
  *       tester.GraphQL(`{ users { name } }`).AssertUnauthenticated()
  *   })
  */
-//func (tester *Tester) It(description string, fn func(*Tester)) {
-//	tester.t.Helper()
-//	tester.t.Run(description, func(t *testing.T) {
-//		sub := tester.clone()
-//		sub.t = t
-//		fn(sub)
-//	})
-//}
+func (tester *Tester) It(description string, fn func(*Tester)) {
+	tester.t.Helper()
+	tester.t.Run(description, func(t *testing.T) {
+		sub := tester.clone()
+		sub.t = t
+
+		// Run BeforeEach if set
+		if sub.beforeEach != nil {
+			sub.beforeEach()
+		}
+
+		// Clear auth for clean state
+		sub.currentUser = nil
+		sub.currentToken = ""
+
+		fn(sub)
+	})
+}
 
 /**
  * BeforeEach sets up state before each test.
@@ -790,6 +742,8 @@ func (tester *Tester) Run(name string, fn func(*Tester)) {
  *       tester.RefreshDatabase().GivenAdmin()
  *   })
  */
-//func (tester *Tester) BeforeEach(fn func()) {
-//	fn()
-//}
+func (tester *Tester) BeforeEach(fn func()) {
+	// Store the before function on the tester
+	// It will be called by It() before running the test
+	tester.beforeEach = fn
+}
