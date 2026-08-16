@@ -48,33 +48,39 @@ import (
  *   *Tester for fluent method chaining
  */
 func (tester *Tester) ActingAs(user interface{}) *Tester {
-	fmt.Printf("The Acting has been fired %v", user)
 	tester.mu.Lock()
 	defer tester.mu.Unlock()
 
 	tester.currentUser = user
 
-	// Create a custom middleware that injects the user into context
 	customAuthMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 
-			fmt.Printf("One the context %v", ctx)
 			// Set user in context using multiple key types
-			// This ensures compatibility with your app's context package
 			ctx = context.WithValue(ctx, types.UserKey, user)
-			ctx = context.WithValue(ctx, "user", user) // String key for compatibility
+			ctx = context.WithValue(ctx, "user", user)
 
-			// Also set user ID
+			// Extract and set user ID properly
 			if userWithID, ok := user.(interface{ GetID() string }); ok {
-				ctx = context.WithValue(ctx, types.UserIDKey, userWithID.GetID())
-				ctx = context.WithValue(ctx, "user_id", userWithID.GetID())
-				fmt.Printf("The user with context %v", userWithID)
+				userID := userWithID.GetID()
+				ctx = context.WithValue(ctx, types.UserIDKey, userID)
+				ctx = context.WithValue(ctx, "user_id", userID)
 			}
 
-			fmt.Printf("the context %v", ctx)
+			// Also set as uint if the user has a direct ID field
+			if reflect.TypeOf(user).Kind() == reflect.Ptr {
+				elem := reflect.ValueOf(user).Elem()
+				if elem.Kind() == reflect.Struct {
+					if idField := elem.FieldByName("ID"); idField.IsValid() {
+						if idField.Kind() == reflect.Uint {
+							userIDUint := uint(idField.Uint())
+							ctx = context.WithValue(ctx, "user_id_uint", userIDUint)
+						}
+					}
+				}
+			}
 
-			// Set auth status as authenticated
 			ctx = context.WithValue(ctx, types.AuthStatusKey, types.AuthStatusAuthenticated)
 			ctx = context.WithValue(ctx, "auth_status", "authenticated")
 
@@ -82,18 +88,8 @@ func (tester *Tester) ActingAs(user interface{}) *Tester {
 		})
 	}
 
-	fmt.Sprintf("the custom AuthMiddleware is %v", customAuthMiddleware)
-	// Replace existing auth middleware with our custom one
 	if tester.middlewareChain != nil {
 		tester.middlewareChain.Replace("auth", customAuthMiddleware)
-	} else {
-		// If no middleware chain, create one with just auth
-		tester.setupMiddleware()
-		tester.middlewareChain.Replace("auth", customAuthMiddleware)
-	}
-
-	if tester.config.Debug() {
-		tester.t.Logf("🔑 Acting as user: %v", tester.getUserIdentifier(user))
 	}
 
 	return tester
