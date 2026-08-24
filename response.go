@@ -2,7 +2,9 @@ package graphqltester
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -196,6 +198,177 @@ func (r *Response) JSONMap(path string) map[string]interface{} {
 }
 
 // ============================================================================
+// Diff Helpers for Better Assertion Output
+// ============================================================================
+
+// DiffResult represents a difference between expected and actual values
+type DiffResult struct {
+	Path     string
+	Expected interface{}
+	Actual   interface{}
+	Message  string
+}
+
+// findDifferences recursively finds differences between expected and actual
+func findDifferences(path string, expected, actual interface{}) []DiffResult {
+	var diffs []DiffResult
+
+	switch exp := expected.(type) {
+	case map[string]interface{}:
+		act, ok := actual.(map[string]interface{})
+		if !ok {
+			diffs = append(diffs, DiffResult{
+				Path:    path,
+				Message: fmt.Sprintf("expected object but got %T", actual),
+			})
+			return diffs
+		}
+
+		for key, expVal := range exp {
+			newPath := path
+			if path == "" {
+				newPath = key
+			} else {
+				newPath = path + "." + key
+			}
+
+			actVal, exists := act[key]
+			if !exists {
+				diffs = append(diffs, DiffResult{
+					Path:    newPath,
+					Message: fmt.Sprintf("key not found in response (expected: %v)", expVal),
+				})
+				continue
+			}
+
+			childDiffs := findDifferences(newPath, expVal, actVal)
+			diffs = append(diffs, childDiffs...)
+		}
+
+	case []interface{}:
+		act, ok := actual.([]interface{})
+		if !ok {
+			diffs = append(diffs, DiffResult{
+				Path:    path,
+				Message: fmt.Sprintf("expected array but got %T", actual),
+			})
+			return diffs
+		}
+
+		if len(exp) != len(act) {
+			diffs = append(diffs, DiffResult{
+				Path:    path,
+				Message: fmt.Sprintf("array length mismatch: expected %d, got %d", len(exp), len(act)),
+			})
+		}
+
+		// Check each element
+		for i := range exp {
+			if i >= len(act) {
+				diffs = append(diffs, DiffResult{
+					Path:    fmt.Sprintf("%s[%d]", path, i),
+					Message: "array element missing",
+				})
+				continue
+			}
+
+			childPath := fmt.Sprintf("%s[%d]", path, i)
+			childDiffs := findDifferences(childPath, exp[i], act[i])
+			diffs = append(diffs, childDiffs...)
+		}
+
+	default:
+		// Simple value comparison
+		if !reflect.DeepEqual(expected, actual) {
+			diffs = append(diffs, DiffResult{
+				Path:     path,
+				Expected: expected,
+				Actual:   actual,
+			})
+		}
+	}
+
+	return diffs
+}
+
+// formatValue formats a value for display
+func formatValue(val interface{}) string {
+	if val == nil {
+		return "null"
+	}
+
+	switch v := val.(type) {
+	case string:
+		return fmt.Sprintf("'%s'", v)
+	case float64:
+		if v == float64(int(v)) {
+			return fmt.Sprintf("%d", int(v))
+		}
+		return fmt.Sprintf("%.1f", v)
+	case bool:
+		return fmt.Sprintf("%t", v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// isSubset checks if subset is a subset of superset
+func isSubset(subset, superset interface{}) bool {
+	// Convert to JSON and back to normalize
+	subsetJSON, _ := json.Marshal(subset)
+	supersetJSON, _ := json.Marshal(superset)
+
+	var subsetNorm interface{}
+	var supersetNorm interface{}
+	json.Unmarshal(subsetJSON, &subsetNorm)
+	json.Unmarshal(supersetJSON, &supersetNorm)
+
+	return isSubsetRecursive(subsetNorm, supersetNorm)
+}
+
+func isSubsetRecursive(subset, superset interface{}) bool {
+	switch sub := subset.(type) {
+	case map[string]interface{}:
+		super, ok := superset.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for key, subVal := range sub {
+			superVal, exists := super[key]
+			if !exists {
+				return false
+			}
+			if !isSubsetRecursive(subVal, superVal) {
+				return false
+			}
+		}
+		return true
+
+	case []interface{}:
+		super, ok := superset.([]interface{})
+		if !ok {
+			return false
+		}
+		if len(sub) > len(super) {
+			return false
+		}
+		// Check if all elements in subset exist in superset (order matters)
+		for i, subVal := range sub {
+			if i >= len(super) {
+				return false
+			}
+			if !isSubsetRecursive(subVal, super[i]) {
+				return false
+			}
+		}
+		return true
+
+	default:
+		return reflect.DeepEqual(subset, superset)
+	}
+}
+
+// ============================================================================
 // Assertion Helpers (delegates to assertions package)
 // ============================================================================
 
@@ -273,17 +446,104 @@ func (r *Response) AssertErrorCategory(category string) *Response {
 
 /**
  * AssertJSON asserts exact JSON match.
+ *
+ * This will show a detailed diff when the assertion fails.
  */
 func (r *Response) AssertJSON(expected interface{}) *Response {
-	assertions.NewResponseAssertions(r).AssertJSON(expected)
+	// Normalize both sides
+	expectedJSON, _ := json.Marshal(expected)
+	var expectedNorm interface{}
+	json.Unmarshal(expectedJSON, &expectedNorm)
+
+	actualJSON, _ := json.Marshal(r.data)
+	var actualNorm interface{}
+	json.Unmarshal(actualJSON, &actualNorm)
+
+	if !reflect.DeepEqual(expectedNorm, actualNorm) {
+		r.tester.t.Errorf("❌ JSON mismatch")
+
+		// Find differences
+		diffs := findDifferences("", expectedNorm, actualNorm)
+
+		// Show expected
+		expectedPretty, _ := json.MarshalIndent(expected, "", "  ")
+		r.tester.t.Logf("📋 Expected:")
+		r.tester.t.Logf("%s", string(expectedPretty))
+
+		// Show actual
+		actualPretty, _ := json.MarshalIndent(r.data, "", "  ")
+		r.tester.t.Logf("📋 Actual:")
+		r.tester.t.Logf("%s", string(actualPretty))
+
+		// Show differences
+		if len(diffs) > 0 {
+			r.tester.t.Logf("🔍 Differences:")
+			for _, diff := range diffs {
+				if diff.Message != "" {
+					r.tester.t.Logf("   ❌ %s: %s", diff.Path, diff.Message)
+				} else {
+					expStr := formatValue(diff.Expected)
+					actStr := formatValue(diff.Actual)
+					r.tester.t.Logf("   ❌ %s: expected %s, got %s", diff.Path, expStr, actStr)
+				}
+			}
+		}
+
+		r.tester.t.Logf("")
+		r.tester.t.Logf("Failed asserting that JSON matches exactly:")
+		expectedPretty, _ = json.MarshalIndent(expected, "", "  ")
+		r.tester.t.Logf("%s", string(expectedPretty))
+	}
 	return r
 }
 
 /**
  * AssertJSONSubset asserts partial JSON match.
+ *
+ * Unlike AssertJSON, extra fields in the response are ignored.
+ * This will show a detailed diff when the assertion fails.
  */
 func (r *Response) AssertJSONSubset(expected interface{}) *Response {
-	assertions.NewResponseAssertions(r).AssertJSONSubset(expected)
+	// Normalize both sides
+	expectedJSON, _ := json.Marshal(expected)
+	var expectedNorm interface{}
+	json.Unmarshal(expectedJSON, &expectedNorm)
+
+	if !isSubset(expectedNorm, r.data) {
+		r.tester.t.Errorf("❌ Expected subset not found in response")
+
+		// Find differences
+		diffs := findDifferences("", expectedNorm, r.data)
+
+		// Show expected
+		expectedPretty, _ := json.MarshalIndent(expected, "", "  ")
+		r.tester.t.Logf("📋 Expected:")
+		r.tester.t.Logf("%s", string(expectedPretty))
+
+		// Show actual
+		actualPretty, _ := json.MarshalIndent(r.data, "", "  ")
+		r.tester.t.Logf("📋 Actual:")
+		r.tester.t.Logf("%s", string(actualPretty))
+
+		// Show differences
+		if len(diffs) > 0 {
+			r.tester.t.Logf("🔍 Differences:")
+			for _, diff := range diffs {
+				if diff.Message != "" {
+					r.tester.t.Logf("   ❌ %s: %s", diff.Path, diff.Message)
+				} else {
+					expStr := formatValue(diff.Expected)
+					actStr := formatValue(diff.Actual)
+					r.tester.t.Logf("   ❌ %s: expected %s, got %s", diff.Path, expStr, actStr)
+				}
+			}
+		}
+
+		r.tester.t.Logf("")
+		r.tester.t.Logf("Failed asserting that an array has the subset:")
+		expectedPretty, _ = json.MarshalIndent(expected, "", "  ")
+		r.tester.t.Logf("%s", string(expectedPretty))
+	}
 	return r
 }
 
