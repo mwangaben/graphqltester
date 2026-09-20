@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/mwangaben/graphqltester/types"
 	"strings"
 	"time"
 
@@ -650,3 +651,6 @@ func (a *EntAdapter) DB() *sql.DB {
 func (a *EntAdapter) Driver() *entsql.Driver {
 	return a.driver
 }
+
+// Compile-time check
+var _ types.DatabaseAdapter = (*EntAdapter)(nil)

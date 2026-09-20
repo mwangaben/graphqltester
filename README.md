@@ -1,8 +1,8 @@
 # GraphQL Tester for Go
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/mwangaben/graphql-tester.svg)](https://pkg.go.dev/github.com/mwangaben/graphql-tester)
-[![Go Report Card](https://goreportcard.com/badge/github.com/mwangaben/graphql-tester)](https://goreportcard.com/report/github.com/mwangaben/graphql-tester)
-[![Tests](https://github.com/mwangaben/graphql-tester/workflows/Tests/badge.svg)](https://github.com/mwangaben/graphql-tester/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mwangaben/graphqltester.svg)](https://pkg.go.dev/github.com/mwangaben/graphqltester)
+[![Go Report Card](https://goreportcard.com/badge/github.com/mwangaben/graphqltester)](https://goreportcard.com/report/github.com/mwangaben/graphqltester)
+[![Tests](https://github.com/mwangaben/graphqltester/workflows/Tests/badge.svg)](https://github.com/mwangaben/graphqltester/actions)
 
 A comprehensive, production-ready GraphQL API testing framework for Go, inspired by [PHP Pest](https://pestphp.com/) and [Laravel Lighthouse](https://lighthouse-php.com/). Test your GraphQL queries, mutations, and subscriptions with elegant, fluent assertions.
 
@@ -14,7 +14,7 @@ A comprehensive, production-ready GraphQL API testing framework for Go, inspired
 - 🗄️ **Database Assertions** - Verify database state after GraphQL operations
 - ✅ **Validation Testing** - Test GraphQL validation rules and error messages
 - 🏗️ **Multiple HTTP Frameworks** - Supports net/http, Gin, Echo, and Chi
-- 💾 **Multiple Database Adapters** - GORM, SQLx, and raw MySQL support
+- 💾 **Multiple Database Adapters** - **Ent**, GORM, SQLx, and raw MySQL support
 - 🔄 **Transaction Isolation** - Automatic transaction rollback for test isolation
 - 🏭 **Laravel-style Factory** - In-memory and database-backed model factories
 - 🏢 **Multi-Tenancy** - Test tenant-specific behavior and isolation
@@ -23,12 +23,18 @@ A comprehensive, production-ready GraphQL API testing framework for Go, inspired
 - 📝 **BDD Style** - Describe/It/Run pattern for readable test organization
 - 🔄 **Context Propagation** - Automatic propagation of auth, tenant, and request context
 
+## What's New in v1.1.3
+
+- ✨ **Full Ent ORM support** — first-class `EntAdapter` for Ent-backed GraphQL APIs
+- 🎯 **Integration test proving Ent works end-to-end** with the tester's assertions
+- 📚 **Ent-specific documentation** — including type-mapping guide for graph-gophers
+- 🐛 **Nullable GraphQL fields** — proper support for `*string`, `*int32`, `*bool` returns
+
 ## Installation
 
 ```bash
 go get github.com/mwangaben/graphqltester
-````
-
+```
 
 ## Quick Start
 
@@ -99,50 +105,29 @@ func TestZones(t *testing.T) {
 
 ## Table of Contents
 
-
-- Installation
-
-- Quick Start
-
-- Configuration
-
-- Authentication
-
-- Assertions
-
-   - HTTP Status
-
-  - GraphQL Errors
-
-  - Data Assertions
-
-  - JSON Path Navigation
-
-  - Validation Assertions
-
-  - Permission Assertions
-
-  - Database Assertions
-
-- Factory
-
-- BDD Testing Style
-
-- Parallel Testing
-
-- Subscription Testing
-
-- Framework Adapters
-
-- Database Adapters
-
-- Middleware
-
-- Package Structure
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [What's New](#whats-new-in-v113)
+- [Configuration](#configuration)
+- [Authentication](#-authentication)
+- [Assertions](#-assertions)
+- [Factory](#-factory)
+- [BDD Testing Style](#bdd-testing-style)
+- [Parallel Testing](#parallel-testing)
+- [Subscription Testing](#subscription-testing)
+- [Framework Adapters](#framework-adapters)
+- [Database Adapters](#database-adapters)
+  - [Ent](#ent-orm-recommended-for-new-projects)
+  - [GORM](#gorm)
+  - [SQLx](#sqlx)
+  - [Raw MySQL](#raw-mysql)
+- [GraphQL Type Mapping](#graphql-type-mapping)
+- [Middleware](#middleware)
+- [Package Structure](#package-structure)
 
 ## Configuration
 
-#### Full Configuration Example
+### Full Configuration Example
 
 ```go
 config := &tester.Config{
@@ -186,11 +171,9 @@ config := &tester.Config{
 }
 ```
 
-#### Database-Free Configuration
+### Database-Free Configuration
 
 For tests that don't need a database:
-
-
 
 ```go
 config := tester.DefaultConfig()
@@ -253,7 +236,6 @@ givenViewer(tester) // User with view-only permission
 givenAdmin(tester)  // User with all permissions
 ```
 
-
 ## ✅ Assertions
 
 ### HTTP Status Assertions
@@ -301,7 +283,6 @@ test.GraphQL(`...`).
     AssertData().       // Data is not nil
     AssertDataNil()     // Data is nil
 ```
-
 
 ### JSON Path Navigation
 
@@ -366,10 +347,11 @@ test.GraphQL(`...`).
 ```
 
 ## 🏭 Factory
+
 The package includes a Laravel-style factory that works both in-memory and with a database.
 
+### In-Memory Factory (No Database Required)
 
-#### In-Memory Factory (No Database Required)
 ```go
 f := factory.NewFactory()
 
@@ -394,8 +376,7 @@ adminUser := f.Of("User").Overrides(map[string]interface{}{
 users := f.Of("User").Times(5).Create()
 ```
 
-
-#### Database-Backed Factory
+### Database-Backed Factory
 
 ```go
 f := factory.NewFactory()
@@ -429,10 +410,9 @@ fmt.Println(user.ID)  // Auto-generated by database
 | Define(name, fn)        | Register a factory definition              |
 | State(model, state, fn) | Register a state transformation            |
 
+## BDD Testing Style
 
-### BDD Testing Style
-
-#### Pest-Style Individual Tests
+### Pest-Style Individual Tests
 
 ```go
 // Each test is a top-level function - run individually!
@@ -449,15 +429,14 @@ func TestRequiresAuthForUserQuery(t *testing.T) {
 }
 ```
 
-##### Run individually:
+Run individually:
 
-```go
+```bash
 go test -run TestCanCreateUser -v
 go test -run "TestCan.*" -v
 ```
 
-
-#### Describe/It Pattern
+### Describe/It Pattern
 
 ```go
 test.Describe("Zone CRUD Operations", func(t *tester.Tester) {
@@ -484,15 +463,9 @@ test.Describe("Zone CRUD Operations", func(t *tester.Tester) {
             AssertValidationError("input.name", "required")
     })
 })
-
-// Sub-tests with isolation
-test.Run("User Tests", func(t *tester.Tester) {
-    t.GivenAdmin()
-    t.GraphQL(`...`).AssertNoErrors()
-})
 ```
 
-#### Sub-Tests with Run
+### Sub-Tests with Run
 
 ```go
 tester.Run("User CRUD Flow", func(t *graphqltester.Tester) {
@@ -500,7 +473,7 @@ tester.Run("User CRUD Flow", func(t *graphqltester.Tester) {
 })
 ```
 
-### Parallel Testing
+## Parallel Testing
 
 ```go
 test.RunParallel([]func(*tester.IsolatedTester){
@@ -519,7 +492,7 @@ test.RunParallel([]func(*tester.IsolatedTester){
 })
 ```
 
-### Subscription Testing
+## Subscription Testing
 
 ```go
 client, sub := test.Subscribe(`
@@ -543,7 +516,7 @@ test.AssertSubscription(sub).
     AssertNoErrors()
 ```
 
-### Framework Adapters
+## Framework Adapters
 
 ```go
 // Standard net/http
@@ -559,27 +532,162 @@ HTTPAdapter: http.NewEchoAdapter(false)
 HTTPAdapter: http.NewChiAdapter()
 ```
 
-### Database Adapter Configuration
+## Database Adapters
+
+### Ent ORM (Recommended for New Projects)
+
+Full Ent ORM support via raw SQL on the underlying `*sql.DB`. The `EntAdapter` is designed for testing Ent-backed GraphQL APIs.
 
 ```go
-// GORM
+import (
+    "context"
+    "time"
+
+    "github.com/mwangaben/graphqltester/pkg/adapters/database"
+)
+
+// 1. Create the adapter
+adapter := database.NewEntAdapter(&database.EntConfig{
+    Debug:              true,
+    LogQueries:         false,
+    MaxOpenConns:       25,
+    MaxIdleConns:       25,
+    ConnMaxLifetime:    time.Hour,
+    SkipMigration:      false,
+    // Optional: provide a migration hook for AutoMigrate
+    MigrateFunc: func(ctx context.Context) error {
+        return client.Schema.Create(ctx)
+    },
+})
+
+// 2. Register models for table management
+adapter.AddModel(&ent.User{}).AddModel(&ent.Post{})
+
+// 3. Connect (dialect auto-detected from DSN)
+if err := adapter.Connect(dsn); err != nil {
+    log.Fatal(err)
+}
+defer adapter.Close()
+
+// 4. Use with graphqltester
+test := graphqltester.NewTester(t, &graphqltester.Config{
+    Schema: &graphqltester.SchemaConfig{
+        String:    resolvers.Schema,
+        Resolvers: rootResolver,
+    },
+    Database: &graphqltester.DatabaseConfig{
+        Adapter: adapter,
+    },
+})
+```
+
+**Supported dialects:**
+
+- MySQL / MariaDB
+- PostgreSQL
+- SQLite
+
+**Dialect detection is automatic** based on the DSN format.
+
+**Operations supported:**
+
+| Operation | Method |
+|-----------|--------|
+| Insert | `adapter.Insert(ctx, table, data)` |
+| Update | `adapter.Update(ctx, table, conditions, data)` |
+| Delete | `adapter.Delete(ctx, table, conditions)` |
+| Exists | `adapter.HasRecord(ctx, table, conditions)` |
+| Get one | `adapter.GetRecord(ctx, table, conditions)` |
+| Get many | `adapter.GetRecords(ctx, table, conditions, limit)` |
+| Count | `adapter.Count(ctx, table, conditions)` |
+| Soft-delete check | `adapter.IsSoftDeleted(ctx, table, conditions)` |
+| Drop all | `adapter.DropAll()` |
+| Truncate all | `adapter.TruncateAll()` |
+| Transaction | `adapter.BeginTx(ctx)` / `Commit(tx)` / `Rollback(tx)` |
+
+**See the "GraphQL Type Mapping" section below for important details about GraphQL resolver types when using Ent.**
+
+### GORM
+
+```go
 adapter := database.NewGORMAdapter(&database.GORMConfig{
     PrepareStmt: true,
     SkipDefaultTransaction: true,
 })
 adapter.AddModel(&User{}).AddModel(&Zone{})
+```
 
-// SQLx
+### SQLx
+
+```go
 adapter := database.NewSQLxAdapter("mysql")
 adapter.AddTable("users").AddTable("zones")
+```
 
-// Raw MySQL
+### Raw MySQL
+
+```go
 adapter := database.NewMySQLAdapter()
 adapter.AddTable("users", `CREATE TABLE users (...)`)
 ```
 
+## GraphQL Type Mapping
 
-### Middleware
+When wrapping Ent entities in GraphQL resolvers, follow these type rules for `graph-gophers/graphql-go`:
+
+| GraphQL Type | Go Return Type |
+|--------------|----------------|
+| `Int!` | `int32` |
+| `Int` (nullable) | `*int32` |
+| `String!` | `string` |
+| `String` (nullable) | `*string` |
+| `Boolean!` | `bool` |
+| `Boolean` (nullable) | `*bool` |
+| `Float!` | `float64` |
+| `ID!` | `graphql.ID` or `string` |
+| `ID` (nullable) | `*graphql.ID` or `*string` |
+
+**Example — wrapping an Ent entity for GraphQL:**
+
+```go
+// ent.User has ID int, Age int, Role string
+// But the GraphQL schema expects Int for ID and Age
+
+type UserResolver struct {
+    user *ent.User
+}
+
+// GraphQL Int maps to int32 — NOT int
+func (r *UserResolver) ID() int32    { return int32(r.user.ID) }
+func (r *UserResolver) Age() int32   { return int32(r.user.Age) }
+
+// Non-nullable String → string
+func (r *UserResolver) Name() string { return r.user.Name }
+func (r *UserResolver) Email() string { return r.user.Email }
+
+// Nullable String → *string
+func (r *UserResolver) Role() *string {
+    if r.user.Role == "" {
+        return nil
+    }
+    return &r.user.Role
+}
+```
+
+**Why this matters:** `graph-gophers` uses `int32` for the built-in `Int` scalar. Returning Go's `int` will fail schema validation with an error like:
+
+```
+can not use int as Int
+```
+
+**Solutions:**
+
+1. **Return `int32`** from resolver methods (recommended) — matches the schema
+2. **Declare a custom `scalar Int`** in your schema — then you can return Go's `int`
+
+The `graphql-kit` package provides a ready-made custom `Int` scalar if you prefer option 2.
+
+## Middleware
 
 The tester includes a configurable middleware chain:
 
@@ -596,7 +704,6 @@ config.WithCustomMiddleware(myCustomMiddleware)
 
 ### Middleware Execution Order
 
-- Custom middleware (user-provided)
 1. Custom middleware (user-provided)
 2. Request ID middleware
 3. Context propagation middleware
@@ -606,8 +713,7 @@ config.WithCustomMiddleware(myCustomMiddleware)
 7. Validation middleware (if enabled)
 8. Response capture middleware
 
-
-### Package Structure
+## Package Structure
 
 ```text
 graphql-tester/
@@ -632,6 +738,7 @@ graphql-tester/
 │   │   │   └── chi.go             # Chi router adapter
 │   │   └── database/              # Database adapters
 │   │       ├── adapter.go         # DatabaseAdapter interface
+│   │       ├── ent.go             # Ent adapter ← NEW
 │   │       ├── gorm.go            # GORM adapter
 │   │       ├── sqlx.go            # SQLx adapter
 │   │       └── mysql.go           # Raw MySQL adapter
@@ -665,21 +772,13 @@ graphql-tester/
             |--- concurrent_test.go
             |--- config_test.go
             |--- factory_test.go
-            |--- response_test.go 
+            |--- response_test.go
+            |--- ent_adapter_test.go       ← NEW
+            |--- ent_factory_test.go       ← NEW
+            |--- ent_integration_test.go   ← NEW
 ```
 
-
-```go
-config := &tester.Config{
-    Packages: &tester.PackageConfig{
-        Factory:    myFactory,
-        Permission: myPermissionManager,
-        Validation: myValidator,
-    },
-}
-```
-
-### Tester API Reference
+## Tester API Reference
 
 | Method                                   | Description                       |
 |------------------------------------------|-----------------------------------|
@@ -721,40 +820,30 @@ config := &tester.Config{
 | Debug()                                  | Get debug mode status             |
 | Helper()                                 | Mark as test helper               |
 
+## Changelog
 
-### License
+### v1.1.3 — Ent ORM Support
 
+- **Added:** `EntAdapter` — full Ent ORM support via raw SQL on `*sql.DB`
+- **Added:** MySQL, PostgreSQL, and SQLite support for Ent
+- **Added:** Automatic dialect detection from DSN
+- **Added:** `MigrateFunc` hook for auto-migration with Ent clients
+- **Added:** Integration test proving `EntAdapter` works end-to-end with assertions
+- **Added:** Comprehensive Ent adapter tests (`ent_adapter_test.go`, `ent_factory_test.go`)
+- **Added:** Integration test (`ent_integration_test.go`)
+- **Added:** GraphQL type mapping documentation (int32 for Int, *string for nullable String)
+- **Fixed:** `Create` operation on Ent models with custom table names
 
-```text
+### v1.1.0
 
-The README now includes:
-- ✅ Updated factory section with both in-memory and database examples
-- ✅ Database-free configuration option
-- ✅ Complete factory API reference
-- ✅ JSON path navigation examples
-- ✅ Parallel testing with FailFast
-- ✅ Package structure diagram
-- ✅ Full tester API reference table
-- ✅ Middleware execution order
-- ✅ BDD testing with Describe/It/Run
-```
+- Storage abstraction supporting GORM, SQLx, raw MySQL
+- Multi-tenant testing support
+- Parallel test execution
 
+### v1.0.0
 
+- Initial release
 
+## License
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+MIT License — see [LICENSE](LICENSE) for details.
