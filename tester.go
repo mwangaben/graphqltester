@@ -747,3 +747,46 @@ func (tester *Tester) BeforeEach(fn func()) {
 	// It will be called by It() before running the test
 	tester.beforeEach = fn
 }
+
+// ============================================================================
+// Auth Convenience (NEW)
+// ============================================================================
+
+/**
+ * SignInAndGetToken authenticates via the login mutation and stores the token.
+ *
+ * This is a convenience method for tests that need a real JWT for
+ * WebSocket subscriptions.
+ *
+ * Requires the schema to have a `login` mutation that returns an
+ * AuthPayload with an `accessToken` field.
+ *
+ * Example:
+ *   user := test.Factory("User").Create().(*ent.User)
+ *   token := test.SignInAndGetToken("user@example.com", "password123")
+ *   client, sub := test.Subscribe(`...`) // uses the token automatically
+ */
+func (tester *Tester) SignInAndGetToken(email, password string) string {
+	response := tester.GraphQL(`
+		mutation Login($input: LoginInput!) {
+			login(input: $input) {
+				accessToken
+			}
+		}
+	`, map[string]interface{}{
+		"input": map[string]interface{}{
+			"email":    email,
+			"password": password,
+		},
+	})
+
+	response.AssertNoErrors()
+
+	token := response.JSONString("login.accessToken")
+	if token == "" {
+		tester.t.Fatalf("❌ login mutation did not return an accessToken")
+	}
+
+	tester.WithToken(token)
+	return token
+}

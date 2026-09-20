@@ -10,7 +10,7 @@ A comprehensive, production-ready GraphQL API testing framework for Go, inspired
 
 - 🚀 **Fluent API** - Chainable assertions with readable, expressive syntax
 - 🔐 **Authentication Testing** - Built-in support for testing auth, roles, and permissions
-- 📡 **Subscription Testing** - WebSocket support for real-time GraphQL subscriptions
+- 📡 **Subscription Testing** - WebSocket support with **full auth flow** and error handling
 - 🗄️ **Database Assertions** - Verify database state after GraphQL operations
 - ✅ **Validation Testing** - Test GraphQL validation rules and error messages
 - 🏗️ **Multiple HTTP Frameworks** - Supports net/http, Gin, Echo, and Chi
@@ -23,7 +23,14 @@ A comprehensive, production-ready GraphQL API testing framework for Go, inspired
 - 📝 **BDD Style** - Describe/It/Run pattern for readable test organization
 - 🔄 **Context Propagation** - Automatic propagation of auth, tenant, and request context
 
-## What's New in v1.1.3
+## What's New in v1.2.0
+
+- 🔐 **WebSocket authentication support** — subscription tests can now authenticate
+- 📩 **Error message handling** — server-sent errors on subscriptions are captured and assertable
+- 🎯 **Per-subscription error state** — accumulate errors during the subscription lifecycle
+- 🧪 **Full subscription auth test coverage** — both authenticated and unauthenticated flows
+
+### What's New in v1.1.3
 
 - ✨ **Full Ent ORM support** — first-class `EntAdapter` for Ent-backed GraphQL APIs
 - 🎯 **Integration test proving Ent works end-to-end** with the tester's assertions
@@ -107,7 +114,7 @@ func TestZones(t *testing.T) {
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [What's New](#whats-new-in-v113)
+- [What's New](#whats-new-in-v120)
 - [Configuration](#configuration)
 - [Authentication](#-authentication)
 - [Assertions](#-assertions)
@@ -115,6 +122,10 @@ func TestZones(t *testing.T) {
 - [BDD Testing Style](#bdd-testing-style)
 - [Parallel Testing](#parallel-testing)
 - [Subscription Testing](#subscription-testing)
+  - [Basic Subscriptions](#basic-subscriptions)
+  - [Authenticated Subscriptions](#authenticated-subscriptions)
+  - [Testing Unauthenticated Rejection](#testing-unauthenticated-rejection)
+  - [Getting a Token from GraphQL Login](#getting-a-token-from-graphql-login)
 - [Framework Adapters](#framework-adapters)
 - [Database Adapters](#database-adapters)
   - [Ent](#ent-orm-recommended-for-new-projects)
@@ -183,6 +194,8 @@ config.Schema = &tester.SchemaConfig{
     Resolvers: &mockResolver{},
 }
 ```
+
+> **Note on `Debug`:** `Debug` is a **method**, not a field. Use `DefaultConfig().WithDebug(true)` or the fluent `WithDebug(true)` method — you can't set it in a struct literal.
 
 ## 🔐 Authentication
 
@@ -494,6 +507,10 @@ test.RunParallel([]func(*tester.IsolatedTester){
 
 ## Subscription Testing
 
+The tester supports the full lifecycle of GraphQL subscriptions — from basic event streaming to **authenticated**, **error-asserted** subscriptions over the `graphql-ws` protocol.
+
+### Basic Subscriptions
+
 ```go
 client, sub := test.Subscribe(`
     subscription ZoneCreated {
@@ -515,6 +532,128 @@ test.AssertSubscription(sub).
     AssertDataPath("zoneCreated.name", "Test").
     AssertNoErrors()
 ```
+
+### Authenticated Subscriptions
+
+The tester automatically includes the current auth token in WebSocket connections.
+
+```go
+// 1. Set the token (from a login mutation or test setup)
+test.WithToken("eyJhbGciOiJIUzI1NiIs...")
+
+// 2. Subscribe — the token is sent automatically
+client, sub := test.Subscribe(`
+    subscription {
+        userCreated { id name email }
+    }
+`, nil)
+defer client.Disconnect()
+
+// 3. Assert events
+sub.ExpectMessageContains(map[string]interface{}{
+    "userCreated": map[string]interface{}{"name": "Test User"},
+}, 3*time.Second)
+```
+
+**The token is sent in two places:**
+
+1. The HTTP `Authorization` header during the WebSocket handshake
+2. The `connection_init` payload (`{"Authorization": "Bearer <token>"}`)
+
+This covers all common server-side auth patterns (`graphql-ws`, custom middleware, `graphql-kit`'s WS authenticator, etc.).
+
+### Testing Unauthenticated Rejection
+
+The tester captures server-sent errors that arrive over WebSocket and exposes them for assertions.
+
+```go
+// No token set — the WebSocket connects anonymously
+client, sub := test.Subscribe(`
+    subscription {
+        userCreated { id name }
+    }
+`, nil)
+defer client.Disconnect()
+
+// Assert the server rejected the subscription
+sub.ExpectError("Unauthenticated", 3*time.Second)
+
+// Or use fluent assertion helpers
+test.AssertSubscription(sub).
+    AssertUnauthenticated()      // asserts "Unauthenticated" in the error
+    AssertPermissionDenied()     // asserts "permission" in the error
+    AssertForbidden()            // asserts "Forbidden" in the error
+```
+
+### Getting a Token from GraphQL Login
+
+If your app has a `login` mutation, use the convenience method:
+
+```go
+token := test.SignInAndGetToken("user@example.com", "password123")
+// tester.currentToken is now set
+// Subsequent Subscribe() calls will use it automatically
+```
+
+Or manually:
+
+```go
+response := test.GraphQL(`
+    mutation Login($input: LoginInput!) {
+        login(input: $input) { accessToken }
+    }
+`, map[string]interface{}{
+    "input": map[string]interface{}{
+        "email":    "user@example.com",
+        "password": "password123",
+    },
+}).AssertNoErrors()
+
+token := response.JSONString("login.accessToken")
+test.WithToken(token)
+```
+
+### Subscription API Reference
+
+#### Methods on `Tester`
+
+| Method | Description |
+|--------|-------------|
+| `Subscribe(query, vars...)` | Connect and start a subscription |
+| `NewSubscriptionClient()` | Create a client without starting a subscription |
+| `AssertSubscription(sub)` | Get assertion helpers for a subscription |
+| `SignInAndGetToken(email, password)` | Login via GraphQL and store the token |
+
+#### Methods on `Subscription`
+
+| Method | Description |
+|--------|-------------|
+| `WaitForMessage(timeout)` | Wait for the next message |
+| `WaitForMessages(count, timeout)` | Wait for multiple messages |
+| `ExpectMessage(expected, timeout)` | Assert exact match on next message |
+| `ExpectMessageContains(expected, timeout)` | Assert subset match on next message |
+| `ExpectMessageExact(expected, timeout)` | Alias for `ExpectMessage` |
+| `ExpectNoMessage(timeout)` | Assert no message arrives |
+| `ExpectError(contains, timeout)` | Assert next message is an error containing the substring |
+| `ExpectNoError(timeout)` | Assert no error message arrives |
+| `Stop()` | Terminate the subscription |
+| `Errors` (field) | Accumulated errors during the subscription |
+
+#### Methods on `SubscriptionAssertions`
+
+| Method | Description |
+|--------|-------------|
+| `AssertDataPath(path, expected)` | Assert a value at a JSON path |
+| `AssertDataPathContains(path, expected)` | Assert a value contains expected data |
+| `AssertNoErrors()` | Assert no errors occurred |
+| `AssertErrorContains(contains)` | Assert the received error contains a substring |
+| `AssertUnauthenticated()` | Assert an "Unauthenticated" error was received |
+| `AssertPermissionDenied()` | Assert a permission-denied error was received |
+| `AssertForbidden()` | Assert a "Forbidden" error was received |
+| `AssertActive()` | Assert the subscription is still active |
+| `AssertClosed()` | Assert the subscription is closed |
+| `WithTimeout(timeout)` | Set the default timeout |
+| `ClearCache()` | Clear the cached message for a new assertion sequence |
 
 ## Framework Adapters
 
@@ -738,7 +877,7 @@ graphql-tester/
 │   │   │   └── chi.go             # Chi router adapter
 │   │   └── database/              # Database adapters
 │   │       ├── adapter.go         # DatabaseAdapter interface
-│   │       ├── ent.go             # Ent adapter ← NEW
+│   │       ├── ent.go             # Ent adapter
 │   │       ├── gorm.go            # GORM adapter
 │   │       ├── sqlx.go            # SQLx adapter
 │   │       └── mysql.go           # Raw MySQL adapter
@@ -759,7 +898,8 @@ graphql-tester/
 ├── factory.go                     # Factory integration
 ├── database.go                    # Database management
 ├── schema.go                      # Schema management
-├── subscription.go                # Subscription testing
+├── subscription.go                # Subscription testing (auth-aware)
+├── websocket_handler.go           # WebSocket message handling
 ├── concurrent.go                  # Parallel testing
 ├── go.mod
 ├── go.sum
@@ -773,9 +913,10 @@ graphql-tester/
             |--- config_test.go
             |--- factory_test.go
             |--- response_test.go
-            |--- ent_adapter_test.go       ← NEW
-            |--- ent_factory_test.go       ← NEW
-            |--- ent_integration_test.go   ← NEW
+            |--- ent_adapter_test.go
+            |--- ent_factory_test.go
+            |--- ent_integration_test.go
+            |--- subscription_auth_test.go   ← NEW in v1.2.0
 ```
 
 ## Tester API Reference
@@ -792,6 +933,7 @@ graphql-tester/
 | GivenUser(role, perm, user...)           | Authenticate with role/permission |
 | SignInAdmin(user...)                     | Sign in as admin                  |
 | SignInUser(role, perm, user...)          | Sign in with role/permission      |
+| SignInAndGetToken(email, password)       | Login via GraphQL, return token   |
 | ActingAs(user)                           | Set authenticated user            |
 | WithToken(token)                         | Set bearer token                  |
 | ClearAuth()                              | Clear authentication state        |
@@ -811,7 +953,9 @@ graphql-tester/
 | Run(name, fn)                            | Sub-test with isolation           |
 | BeforeEach(fn)                           | Setup before each test            |
 | RunParallel(tests, config)               | Run tests concurrently            |
-| Subscribe(query, vars)                   | Create subscription               |
+| Subscribe(query, vars)                   | Create subscription (auth-aware)  |
+| NewSubscriptionClient()                  | Create a subscription client      |
+| AssertSubscription(sub)                  | Get subscription assertions       |
 | SetShared(key, value)                    | Set shared state                  |
 | GetShared(key)                           | Get shared state                  |
 | UseMiddleware(chain)                     | Set middleware chain              |
@@ -821,6 +965,23 @@ graphql-tester/
 | Helper()                                 | Mark as test helper               |
 
 ## Changelog
+
+### v1.2.0 — WebSocket Authentication
+
+- **Added:** WebSocket authentication support — `Connect()` reads `tester.CurrentToken()` and includes it in:
+  - HTTP handshake headers (`Authorization: Bearer <token>`)
+  - `connection_init` payload (`{"Authorization": "Bearer <token>"}`)
+- **Added:** Error message handling — `readPump()` now processes `type: "error"` and `type: "connection_error"` messages
+- **Added:** `Subscription.Errors` field — accumulates errors during the subscription lifecycle
+- **Added:** `ExpectError(contains, timeout)` — asserts an error is received
+- **Added:** `ExpectNoError(timeout)` — asserts no error arrives
+- **Added:** `SubscriptionAssertions.AssertErrorContains(contains)` — fluent error assertion
+- **Added:** `SubscriptionAssertions.AssertUnauthenticated()` — asserts "Unauthenticated" error
+- **Added:** `SubscriptionAssertions.AssertPermissionDenied()` — asserts permission error
+- **Added:** `SubscriptionAssertions.AssertForbidden()` — asserts "Forbidden" error
+- **Added:** `SignInAndGetToken(email, password)` — convenience method for login
+- **Added:** `errorMessages()` helper for extracting message strings from `[]*GraphQLError`
+- **Fixed:** Error messages from the server were previously silently ignored during subscriptions- **Test Coverage:** `subscription_auth_test.go` — both authenticated and unauthenticated flows
 
 ### v1.1.3 — Ent ORM Support
 

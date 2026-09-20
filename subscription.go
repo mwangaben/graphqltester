@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ type Subscription struct {
 	Messages    []*SubscriptionMessage
 	MessageChan chan *SubscriptionMessage
 	ErrorChan   chan error
+	Errors      []*types.GraphQLError // ← ADD THIS
 	ctx         context.Context
 	cancel      context.CancelFunc
 }
@@ -178,30 +180,64 @@ func (sc *SubscriptionClient) Subscribe(query string, vars map[string]interface{
 
 /**
  * Connect establishes the WebSocket connection.
+ *
+ * Auth flow:
+ *   1. Reads the tester's current token (set via WithToken or auto after login)
+ *   2. Sends it as an Authorization header during the WebSocket handshake
+ *   3. Also includes it in the connection_init payload
+ *
+ * Both are sent because different servers expect different things:
+ *   - Some check the HTTP header (before upgrade)
+ *   - Some check the connection_init payload (after upgrade)
+ *   - graphql-ws protocol standard is the payload
+ *   - graphql-kit (used by ob) supports both
  */
 func (sc *SubscriptionClient) Connect() {
+	token := sc.tester.CurrentToken()
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		Subprotocols:     []string{"graphql-ws"}, // ← ADD THIS
+		Subprotocols:     []string{"graphql-ws"},
 	}
-	sc.tester.t.Logf("🔌 Attempting WebSocket connection to: %s", sc.url)
-	conn, resp, err := dialer.Dial(sc.url, nil)
-	sc.tester.t.Logf("❌ WebSocket dial failed: %v", err)
-	if resp != nil {
-		sc.tester.t.Logf("   HTTP Status: %d", resp.StatusCode)
-		sc.tester.t.Logf("   Headers: %v", resp.Header)
-		body, _ := io.ReadAll(resp.Body)
-		sc.tester.t.Logf("   Body: %s", string(body))
+
+	// Build auth headers
+	headers := http.Header{}
+	if token != "" {
+		headers.Set("Authorization", "Bearer "+token)
 	}
+
+	sc.tester.t.Logf("🔌 Attempting WebSocket connection to: %s (auth: %t)", sc.url, token != "")
+
+	conn, resp, err := dialer.Dial(sc.url, headers)
 	if err != nil {
+		sc.tester.t.Logf("❌ WebSocket dial failed: %v", err)
+		if resp != nil {
+			sc.tester.t.Logf("   HTTP Status: %d", resp.StatusCode)
+			sc.tester.t.Logf("   Headers: %v", resp.Header)
+			body, _ := io.ReadAll(resp.Body)
+			sc.tester.t.Logf("   Body: %s", string(body))
+		}
 		sc.tester.t.Fatalf("❌ Failed to connect WebSocket: %v", err)
 	}
 
 	sc.conn = conn
 	sc.connected = true
 
-	// Send connection init
-	sc.sendMessage(&SubscriptionMessage{Type: "connection_init"})
+	// Build connection_init payload with auth
+	initPayload := map[string]interface{}{}
+	if token != "" {
+		initPayload["Authorization"] = "Bearer " + token
+	}
+
+	var payloadJSON json.RawMessage
+	if len(initPayload) > 0 {
+		payloadJSON, _ = json.Marshal(initPayload)
+	}
+
+	sc.sendMessage(&SubscriptionMessage{
+		Type:    "connection_init",
+		Payload: payloadJSON,
+	})
 
 	// Start all pending subscriptions
 	sc.mu.RLock()
@@ -256,9 +292,6 @@ func (sc *SubscriptionClient) sendMessage(msg *SubscriptionMessage) {
 	sc.conn.WriteMessage(websocket.TextMessage, data)
 }
 
-/**
- * readPump reads messages from WebSocket.
- */
 func (sc *SubscriptionClient) readPump() {
 	defer sc.Disconnect()
 
@@ -286,6 +319,30 @@ func (sc *SubscriptionClient) readPump() {
 		switch msg.Type {
 		case "connection_ack":
 			sc.tester.t.Logf("🔗 WebSocket connection acknowledged")
+
+		case "connection_error":
+			// Some servers send this on auth failure
+			var errPayload struct {
+				Errors []*types.GraphQLError `json:"errors"`
+			}
+			_ = json.Unmarshal(msg.Payload, &errPayload)
+			sc.tester.t.Logf("❌ Connection error: %v", errPayload.Errors)
+
+			// Broadcast to all active subscriptions
+			sc.mu.RLock()
+			for _, sub := range sc.subscriptions {
+				if sub.Active {
+					sub.Errors = append(sub.Errors, errPayload.Errors...)
+					select {
+					case sub.MessageChan <- &SubscriptionMessage{
+						Type:   "error",
+						Errors: errPayload.Errors,
+					}:
+					default:
+					}
+				}
+			}
+			sc.mu.RUnlock()
 
 		case "data":
 			// Parse the payload
@@ -317,6 +374,33 @@ func (sc *SubscriptionClient) readPump() {
 				sub.Messages = append(sub.Messages, &msg)
 				select {
 				case sub.MessageChan <- &msg:
+				default:
+				}
+			}
+			sc.mu.RUnlock()
+
+		case "error":
+			// Server sent an error for a specific subscription
+			var errPayload struct {
+				Errors []*types.GraphQLError `json:"errors"`
+			}
+			if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+				sc.tester.t.Logf("⚠️  Failed to parse error payload: %v", err)
+				continue
+			}
+
+			sc.tester.t.Logf("❌ Subscription error for %s: %v", msg.ID, errPayload.Errors)
+
+			sc.mu.RLock()
+			if sub, ok := sc.subscriptions[msg.ID]; ok && sub.Active {
+				sub.Errors = append(sub.Errors, errPayload.Errors...)
+				// Send to channel so WaitForMessage can pick it up
+				select {
+				case sub.MessageChan <- &SubscriptionMessage{
+					ID:     msg.ID,
+					Type:   "error",
+					Errors: errPayload.Errors,
+				}:
 				default:
 				}
 			}
@@ -596,6 +680,50 @@ func (sa *SubscriptionAssertions) ClearCache() *SubscriptionAssertions {
 	return sa
 }
 
+/**
+ * AssertErrorContains asserts the next message is an error containing the substring.
+ */
+func (sa *SubscriptionAssertions) AssertErrorContains(contains string) *SubscriptionAssertions {
+	msg := sa.Subscription.WaitForMessage(sa.Timeout)
+	if msg == nil {
+		sa.Tester.t.Errorf("❌ Expected error containing %q, got nil", contains)
+		return sa
+	}
+	if msg.Type != "error" {
+		sa.Tester.t.Errorf("❌ Expected error message, got type %q", msg.Type)
+		return sa
+	}
+	for _, err := range msg.Errors {
+		if strings.Contains(err.Message, contains) {
+			return sa
+		}
+	}
+	sa.Tester.t.Errorf("❌ Expected error containing %q, got: %v",
+		contains, errorMessages(msg.Errors))
+	return sa
+}
+
+/**
+ * AssertUnauthenticated asserts the subscription failed with an Unauthenticated error.
+ */
+func (sa *SubscriptionAssertions) AssertUnauthenticated() *SubscriptionAssertions {
+	return sa.AssertErrorContains("Unauthenticated")
+}
+
+/**
+ * AssertPermissionDenied asserts the subscription failed with a permission error.
+ */
+func (sa *SubscriptionAssertions) AssertPermissionDenied() *SubscriptionAssertions {
+	return sa.AssertErrorContains("permission")
+}
+
+/**
+ * AssertForbidden asserts the subscription failed with a Forbidden error.
+ */
+func (sa *SubscriptionAssertions) AssertForbidden() *SubscriptionAssertions {
+	return sa.AssertErrorContains("Forbidden")
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -672,4 +800,77 @@ func subscriptionGetJSONPath(data interface{}, path string) interface{} {
 	}
 
 	return current
+}
+
+// ============================================================================
+// Error Assertions (NEW)
+// ============================================================================
+
+/**
+ * ExpectError asserts the next message is an error containing the substring.
+ *
+ * Use for testing:
+ *   - Unauthenticated subscription attempts
+ *   - Permission denied on subscription
+ *   - Validation errors in subscription query
+ *
+ * Example:
+ *   sub.ExpectError("Unauthenticated", 3*time.Second)
+ */
+func (sub *Subscription) ExpectError(contains string, timeout time.Duration) *Subscription {
+	msg := sub.WaitForMessage(timeout)
+	if msg == nil {
+		sub.ErrorChan <- fmt.Errorf("expected error containing %q, got nil", contains)
+		return sub
+	}
+	if msg.Type != "error" {
+		sub.ErrorChan <- fmt.Errorf("expected error message, got type %q", msg.Type)
+		return sub
+	}
+	for _, err := range msg.Errors {
+		if strings.Contains(err.Message, contains) {
+			return sub // ✅ Match
+		}
+	}
+	sub.ErrorChan <- fmt.Errorf(
+		"expected error containing %q, got: %v",
+		contains, errorMessages(msg.Errors),
+	)
+	return sub
+}
+
+/**
+ * ExpectNoError asserts no error message arrives within timeout.
+ *
+ * Use for testing:
+ *   - Successful authenticated subscription
+ *   - Policy allows the event
+ */
+func (sub *Subscription) ExpectNoError(timeout time.Duration) *Subscription {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case msg := <-sub.MessageChan:
+			if msg.Type == "error" {
+				sub.ErrorChan <- fmt.Errorf("unexpected error: %v", errorMessages(msg.Errors))
+				return sub
+			}
+			// Ignore non-error messages
+		case <-deadline:
+			return sub // ✅ No error received
+		case <-sub.ctx.Done():
+			return sub
+		}
+	}
+}
+
+/**
+ * errorMessages extracts message strings from a slice of GraphQLErrors.
+ */
+func errorMessages(errs []*types.GraphQLError) []string {
+	msgs := make([]string, len(errs))
+	for i, err := range errs {
+		msgs[i] = err.Message
+	}
+	return msgs
 }
